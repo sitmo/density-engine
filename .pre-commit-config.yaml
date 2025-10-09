@@ -1,0 +1,48 @@
+repos:
+  # Black - Code formatting
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: [--line-length=88, --target-version=py311]
+        files: ^density_engine/.*\.py$
+
+  # isort - Import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=88]
+        files: ^density_engine/.*\.py$
+
+  # mypy - Type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-requests, types-PyYAML, torch, numpy, scipy]
+        args: [--ignore-missing-imports, --no-strict-optional, --disallow-untyped-defs, --disallow-incomplete-defs]
+        files: ^density_engine/.*\.py$
+
+  # pyupgrade - Python syntax upgrades
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.17.0
+    hooks:
+      - id: pyupgrade
+        args: [--py311-plus]
+        files: ^density_engine/.*\.py$
+
+  # General hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^density_engine/.*\.py$
+      - id: end-of-file-fixer
+        files: ^density_engine/.*\.py$
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: debug-statements
+        files: ^density_engine/.*\.py$

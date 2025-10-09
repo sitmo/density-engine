@@ -1,7 +1,8 @@
 import numpy as np
 import torch
-from scipy.stats import t as _t_dist
 from scipy.integrate import quad
+from scipy.stats import t as _t_dist
+
 from .torch import get_best_device
 
 
@@ -37,7 +38,12 @@ class HansenSkewedT_torch:
 
     # ------------------------ init & utilities ------------------------
 
-    def __init__(self, eta: float = 10.0, lam: float = 0.0, device=None):
+    def __init__(
+        self,
+        eta: float = 10.0,
+        lam: float = 0.0,
+        device: str | torch.device | None = None,
+    ):
         if eta <= 2:
             raise ValueError("eta (nu) must be > 2.")
         if not (-1.0 < lam < 1.0):
@@ -48,22 +54,28 @@ class HansenSkewedT_torch:
         self.device = torch.device(device) if device else get_best_device()
 
         # constants (floats)
-        self.c = float(torch.exp(
-            torch.lgamma(torch.tensor((eta + 1.0) / 2.0))
-            - torch.lgamma(torch.tensor(eta / 2.0))
-            - 0.5 * torch.log(torch.tensor(np.pi * (eta - 2.0)))
-        ).item())
-        self.a = float(4.0 * lam * self.c * (eta - 2.0) / (eta - 1.0))
-        self.b = float(np.sqrt(1.0 + 3.0 * lam * lam - self.a * self.a))
-        self.scale = float(np.sqrt(1.0 - 2.0 / eta))
-        self._log_bc = float(np.log(self.b * self.c))
+        self.c: float = float(
+            torch.exp(
+                torch.lgamma(torch.tensor((eta + 1.0) / 2.0))
+                - torch.lgamma(torch.tensor(eta / 2.0))
+                - 0.5 * torch.log(torch.tensor(np.pi * (eta - 2.0)))
+            ).item()
+        )
+        self.a: float = float(4.0 * lam * self.c * (eta - 2.0) / (eta - 1.0))
+        self.b: float = float(np.sqrt(1.0 + 3.0 * lam * lam - self.a * self.a))
+        self.scale: float = float(np.sqrt(1.0 - 2.0 / eta))
+        self._log_bc: float = float(np.log(self.b * self.c))
 
         # inverse CDF table (for rvs)
         self.u_grid: torch.Tensor | None = None
         self.sample_grid: torch.Tensor | None = None
 
     @staticmethod
-    def _to_tensor(x, device, dtype=torch.float32) -> torch.Tensor:
+    def _to_tensor(
+        x: torch.Tensor | np.ndarray | float,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
         if isinstance(x, torch.Tensor):
             return x.to(device=device, dtype=dtype)
         if isinstance(x, np.ndarray):
@@ -77,15 +89,15 @@ class HansenSkewedT_torch:
         Precompute a linear-interp table for inverse-transform sampling.
 
         Mapping:
-        \[
+        \\[
           p =
           \begin{cases}
-            \frac{u}{1-\lambda}, & u<\frac{1-\lambda}{2} \\
-            \frac12 + \frac{u - (1-\lambda)/2}{1+\lambda}, & \text{otherwise}
-          \end{cases}\!,
-          \quad t = T_\nu^{-1}(p),\quad
-          x = \frac{(1 + \lambda\,\mathrm{sign}(u - \frac{1-\lambda}{2}))\, s\, t - a}{b}.
-        \]
+            \frac{u}{1-\\lambda}, & u<\frac{1-\\lambda}{2} \\
+            \frac12 + \frac{u - (1-\\lambda)/2}{1+\\lambda}, & \text{otherwise}
+          \\end{cases}\\!,
+          \\quad t = T_\nu^{-1}(p),\\quad
+          x = \frac{(1 + \\lambda\\,\\mathrm{sign}(u - \frac{1-\\lambda}{2}))\\, s\\, t - a}{b}.
+        \\]
         """
         u_grid = np.linspace(1e-6, 1.0 - 1e-6, num_grid, dtype=np.float32)
         Fm = (1.0 - self.lam) / 2.0
@@ -106,7 +118,7 @@ class HansenSkewedT_torch:
         self.u_grid = torch.from_numpy(u_grid).to(self.device)
         self.sample_grid = samples
 
-    def rvs(self, size) -> torch.Tensor:
+    def rvs(self, size: int) -> torch.Tensor:
         r"""
         Random variates via inverse transform and precomputed table.
 
@@ -133,7 +145,7 @@ class HansenSkewedT_torch:
 
     # ------------------------ pdf / cdf ------------------------
 
-    def logpdf(self, x) -> torch.Tensor:
+    def logpdf(self, x: torch.Tensor | np.ndarray | float) -> torch.Tensor:
         r"""
         \[
           \log f(x) = \log(bc)
@@ -146,16 +158,15 @@ class HansenSkewedT_torch:
         scale = 1.0 + self.lam * sgn
         arg = (self.b * x + self.a) / scale
 
-        return (
-            torch.tensor(self._log_bc, device=self.device)
-            - ((self.eta + 1.0) / 2.0) * torch.log1p((arg * arg) / (self.eta - 2.0))
-        )
+        return torch.tensor(self._log_bc, device=self.device) - (
+            (self.eta + 1.0) / 2.0
+        ) * torch.log1p((arg * arg) / (self.eta - 2.0))
 
-    def pdf(self, x) -> torch.Tensor:
+    def pdf(self, x: torch.Tensor | np.ndarray | float) -> torch.Tensor:
         r"""\(f(x)=\exp(\log f(x))\)."""
         return torch.exp(self.logpdf(x))
 
-    def cdf(self, x) -> torch.Tensor:
+    def cdf(self, x: torch.Tensor | np.ndarray | float) -> torch.Tensor:
         r"""
         Piecewise mapping to t-CDF. Let \(z = b x + a\), \(s=\sqrt{1-2/\nu}\):
         \[
@@ -188,12 +199,14 @@ class HansenSkewedT_torch:
         return out
 
     def F0(self) -> torch.Tensor:
-        """Convenience: \(F(0)\)."""
+        r"""Convenience: \(F(0)\)."""
         return self.cdf(torch.tensor(0.0, device=self.device))
 
     # ------------------------ internal: t helpers (SciPy) ------------------------
 
-    def _t_ppf_torch(self, p: torch.Tensor | np.ndarray | float, df: float) -> torch.Tensor:
+    def _t_ppf_torch(
+        self, p: torch.Tensor | np.ndarray | float, df: float
+    ) -> torch.Tensor:
         r"""
         Accurate \(T_\nu^{-1}(p)\) via SciPy.
         """
@@ -224,7 +237,9 @@ class HansenSkewedT_torch:
         log_density = log_norm - ((df + 1.0) / 2.0) * torch.log1p((t * t) / df)
         return torch.exp(log_density)
 
-    def second_moment_left(self, epsabs: float = 1e-10, epsrel: float = 1e-8, limit: int = 200) -> torch.Tensor:
+    def second_moment_left(
+        self, epsabs: float = 1e-10, epsrel: float = 1e-8, limit: int = 200
+    ) -> torch.Tensor:
         r"""
         Compute the one-sided second moment
         \[
@@ -242,26 +257,34 @@ class HansenSkewedT_torch:
 
         def pdf_scalar(x: float) -> float:
             # scalar, numpy math
-            sgn = np.sign(x + a / b)
-            scale = 1.0 + lam * sgn
-            arg = (b * x + a) / scale
-            return (b * c) * (1.0 + (arg * arg) / (nu - 2.0)) ** (-(nu + 1.0) / 2.0)
+            sgn: float = float(np.sign(x + a / b))
+            scale: float = 1.0 + lam * sgn
+            arg: float = (b * x + a) / scale
+            result: float = (b * c) * (1.0 + (arg * arg) / (nu - 2.0)) ** (
+                -(nu + 1.0) / 2.0
+            )
+            return result
 
         def integrand(x: float) -> float:
             px = pdf_scalar(x)
             return (x * x) * px
 
         x_star = -a / b  # kink
-        total = 0.0
+        total: float = 0.0
 
         # Case 1: kink lies left of 0 -> split
         if x_star < 0.0:
-            val1, _ = quad(integrand, -np.inf, x_star, epsabs=epsabs, epsrel=epsrel, limit=limit)
-            val2, _ = quad(integrand, x_star, 0.0,    epsabs=epsabs, epsrel=epsrel, limit=limit)
+            val1, _ = quad(
+                integrand, -np.inf, x_star, epsabs=epsabs, epsrel=epsrel, limit=limit
+            )
+            val2, _ = quad(
+                integrand, x_star, 0.0, epsabs=epsabs, epsrel=epsrel, limit=limit
+            )
             total = val1 + val2
         else:
             # No kink in (-inf, 0)
-            total, _ = quad(integrand, -np.inf, 0.0, epsabs=epsabs, epsrel=epsrel, limit=limit)
+            total, _ = quad(
+                integrand, -np.inf, 0.0, epsabs=epsabs, epsrel=epsrel, limit=limit
+            )
 
         return torch.tensor(total, dtype=torch.float32, device=self.device)
-        

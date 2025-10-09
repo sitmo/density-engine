@@ -1,5 +1,8 @@
+from typing import List, Tuple, Union
+
+import numpy as np
 import torch
-from typing import Union, List, Tuple
+
 from .skew_student_t import HansenSkewedT_torch
 
 
@@ -22,8 +25,15 @@ class GJRGARCHReduced_torch:
     - It advances variance from t -> t+1 using the shock realized at time t.
     """
 
-    def __init__(self, *, alpha: float, gamma: float, beta: float,
-                 var0: float = 1.0, dist: HansenSkewedT_torch):
+    def __init__(
+        self,
+        *,
+        alpha: float,
+        gamma: float,
+        beta: float,
+        var0: float = 1.0,
+        dist: HansenSkewedT_torch,
+    ):
         """
         Parameters
         ----------
@@ -43,18 +53,18 @@ class GJRGARCHReduced_torch:
         self.device = dist.device
         self._eps = 1e-8
 
-        P0 = dist.second_moment_left()                  # E[z^2 | z<0]
+        P0 = dist.second_moment_left()  # E[z^2 | z<0]
         self.P0 = P0
         self.kappa = self.alpha + self.beta + self.gamma * P0
         if not (self.kappa < 1.0):
             raise ValueError(f"Stationarity violated: kappa={self.kappa} >= 1.")
-        self.omega = 1.0 - self.kappa       # ω' in normalized model
+        self.omega = 1.0 - self.kappa  # ω' in normalized model
 
         # Runtime state
-        self.ti = 0
-        self.num_paths = 0
-        self.var = None                     # (σ'_t)^2
-        self.cum_returns = None             # sum of r'_t
+        self.ti: int = 0
+        self.num_paths: int = 0
+        self.var: torch.Tensor | None = None  # (σ'_t)^2
+        self.cum_returns: torch.Tensor | None = None  # sum of r'_t
 
     def reset(self, num_paths: int) -> None:
         """
@@ -71,7 +81,7 @@ class GJRGARCHReduced_torch:
         self.var = torch.full((self.num_paths,), var0, device=self.device)
         self.cum_returns = torch.zeros((self.num_paths,), device=self.device)
 
-    def step(self):
+    def step(self) -> tuple[torch.Tensor, int]:
         """
         Advance the simulation by one time step.
 
@@ -85,8 +95,8 @@ class GJRGARCHReduced_torch:
         self.ti += 1
 
         # Draw standardized shocks z_t and form ε'_t
-        z = self.dist.rvs(self.num_paths)               # shape (num_paths,)
-        shock = z * torch.sqrt(self.var)                # ε'_t
+        z = self.dist.rvs(self.num_paths)  # shape (num_paths,)
+        shock = z * torch.sqrt(self.var)  # ε'_t
 
         # Update cumulative return r'
         self.cum_returns += shock
@@ -102,7 +112,9 @@ class GJRGARCHReduced_torch:
 
         return self.cum_returns, self.ti
 
-    def path(self, t: Union[List[int], Tuple[int, ...], torch.Tensor]) -> torch.Tensor:
+    def path(
+        self, t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray
+    ) -> torch.Tensor:
         """
         Simulate paths up to specified time points and return cumulative returns.
 
@@ -119,34 +131,34 @@ class GJRGARCHReduced_torch:
             First row contains cum_returns after t[0] steps, etc.
         """
         import numpy as np
-        
+
         t = np.asarray(t)
         if len(t) == 0:
             return torch.empty((0, self.num_paths), device=self.device)
-        
+
         # Ensure t is sorted
         if not np.all(np.diff(t) >= 0):
             raise ValueError("Time points must be sorted in ascending order")
-        
+
         # Ensure all time points are positive
         if np.any(t <= 0):
             raise ValueError("All time points must be positive")
-        
+
         # Reset to beginning
         self.reset(self.num_paths)
-        
+
         # Initialize result tensor
         result = torch.empty((len(t), self.num_paths), device=self.device)
-        
+
         # Simulate up to each time point
         for i, target_t in enumerate(t):
             # Simulate from current time to target time
             while self.ti < target_t:
                 self.step()
-            
+
             # Store cumulative returns at this time point
             result[i] = self.cum_returns
-        
+
         return result
 
 
@@ -167,8 +179,18 @@ class GJRGARCH_torch:
         σ_t^2 = v * (σ'_t)^2
     """
 
-    def __init__(self, *, mu: float, omega: float, alpha: float, gamma: float,
-                 beta: float, sigma0_sq: float, dist, reduced_engine_cls=GJRGARCHReduced_torch):
+    def __init__(
+        self,
+        *,
+        mu: float,
+        omega: float,
+        alpha: float,
+        gamma: float,
+        beta: float,
+        sigma0_sq: float,
+        dist: HansenSkewedT_torch,
+        reduced_engine_cls: type = GJRGARCHReduced_torch,
+    ):
         """
         Parameters
         ----------
@@ -198,7 +220,7 @@ class GJRGARCH_torch:
         self.v = self.omega / (1.0 - self.kappa)
         if not (self.v > 0.0):
             raise ValueError(f"Long-run variance must be positive; got v={self.v}.")
-        self.sqrt_v = float(self.v ** 0.5)
+        self.sqrt_v = float(self.v**0.5)
 
         self.device = dist.device
         self._eps = 1e-8
@@ -214,10 +236,10 @@ class GJRGARCH_torch:
         )
 
         # Raw state mirrors reduced state (but mapped back to raw units)
-        self.ti = 0
-        self.num_paths = 0
-        self.var = None            # raw σ_t^2
-        self.cum_returns = None    # raw cumulative returns Σ r_t
+        self.ti: int = 0
+        self.num_paths: int = 0
+        self.var: torch.Tensor | None = None  # raw σ_t^2
+        self.cum_returns: torch.Tensor | None = None  # raw cumulative returns Σ r_t
 
     def reset(self, num_paths: int) -> None:
         """
@@ -235,7 +257,7 @@ class GJRGARCH_torch:
         self.var = self.reduced.var * self.v
         self.cum_returns = torch.zeros((self.num_paths,), device=self.device)
 
-    def step(self):
+    def step(self) -> tuple[torch.Tensor, int]:
         """
         Advance the simulation by one time step.
 
@@ -246,7 +268,7 @@ class GJRGARCH_torch:
         t : int
             Current time index (1-based).
         """
-        cum_ret_reduced, ti = self.reduced.step()   # Σ r'_s
+        cum_ret_reduced, ti = self.reduced.step()  # Σ r'_s
         self.ti = ti
 
         # Map cumulative returns to raw units: Σ r_s = t * μ + √v * Σ r'_s
@@ -257,7 +279,9 @@ class GJRGARCH_torch:
 
         return self.cum_returns, self.ti
 
-    def path(self, t: Union[List[int], Tuple[int, ...], torch.Tensor]) -> torch.Tensor:
+    def path(
+        self, t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray
+    ) -> torch.Tensor:
         """
         Simulate paths up to specified time points and return cumulative returns.
 
@@ -274,32 +298,32 @@ class GJRGARCH_torch:
             First row contains cum_returns after t[0] steps, etc.
         """
         import numpy as np
-        
+
         t = np.asarray(t)
         if len(t) == 0:
             return torch.empty((0, self.num_paths), device=self.device)
-        
+
         # Ensure t is sorted
         if not np.all(np.diff(t) >= 0):
             raise ValueError("Time points must be sorted in ascending order")
-        
+
         # Ensure all time points are positive
         if np.any(t <= 0):
             raise ValueError("All time points must be positive")
-        
+
         # Reset to beginning
         self.reset(self.num_paths)
-        
+
         # Initialize result tensor
         result = torch.empty((len(t), self.num_paths), device=self.device)
-        
+
         # Simulate up to each time point
         for i, target_t in enumerate(t):
             # Simulate from current time to target time
             while self.ti < target_t:
                 self.step()
-            
+
             # Store cumulative returns at this time point
             result[i] = self.cum_returns
-        
+
         return result
