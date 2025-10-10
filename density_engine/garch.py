@@ -17,7 +17,7 @@ class GJRGARCHReduced_torch:
     with:
         κ = α + β + γ * P0,      P0 = E[z^2 | z < 0]
         ω' = 1 - κ
-        Initial variance (σ'_0)^2 = var0  (typically 1.0 in the normalized model)
+        Initial variance (σ'_0)^2 = sigma0_sq  (typically 1.0 in the normalized model)
 
     Notes
     -----
@@ -31,7 +31,7 @@ class GJRGARCHReduced_torch:
         alpha: float,
         gamma: float,
         beta: float,
-        var0: float = 1.0,
+        sigma0_sq: float = 1.0,
         dist: HansenSkewedT_torch,
     ):
         """
@@ -39,7 +39,7 @@ class GJRGARCHReduced_torch:
         ----------
         alpha, gamma, beta : float
             GJR–GARCH coefficients.
-        var0 : float, optional
+        sigma0_sq : float, optional
             Initial normalized variance (σ'_0)^2. Default 1.0.
         dist : HansenSkewedT_torch
             Shock distribution with mean 0, var 1, and method to obtain P0.
@@ -47,7 +47,7 @@ class GJRGARCHReduced_torch:
         self.alpha = float(alpha)
         self.gamma = float(gamma)
         self.beta = float(beta)
-        self.var0 = float(var0)
+        self.sigma0_sq = float(sigma0_sq)
         self.dist = dist
 
         self.device = dist.device
@@ -77,8 +77,8 @@ class GJRGARCHReduced_torch:
         """
         self.ti = 0
         self.num_paths = int(num_paths)
-        var0 = max(self.var0, self._eps)
-        self.var = torch.full((self.num_paths,), var0, device=self.device)
+        sigma0_sq = max(self.sigma0_sq, self._eps)
+        self.var = torch.full((self.num_paths,), sigma0_sq, device=self.device)
         self.cum_returns = torch.zeros((self.num_paths,), device=self.device)
 
     def step(self) -> tuple[torch.Tensor, int]:
@@ -161,10 +161,82 @@ class GJRGARCHReduced_torch:
 
         return result
 
+    def path_quantiles(
+        self,
+        t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray,
+        lo: float = 0.001,
+        hi: float = 0.999,
+        size: int = 512,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        """
+        Compute quantiles of cumulative returns at specified time points.
+
+        Parameters
+        ----------
+        t : array-like
+            List or array of integers representing time steps (must be sorted).
+            E.g., [4, 10, 12] will return quantiles after 4, 10, and 12 steps.
+        lo : float, default 0.001
+            Lower quantile bound (e.g., 0.001 for 0.1th percentile).
+        hi : float, default 0.999
+            Upper quantile bound (e.g., 0.999 for 99.9th percentile).
+        size : int, default 512
+            Number of quantiles to compute between lo and hi.
+
+        Returns
+        -------
+        torch.Tensor, shape (len(t), size)
+            Quantiles at each specified time point.
+            First row contains quantiles after t[0] steps, etc.
+        """
+        import numpy as np
+
+        t = np.asarray(t)
+        if len(t) == 0:
+            return torch.empty((0, size), device=self.device)
+
+        # Ensure t is sorted
+        if not np.all(np.diff(t) >= 0):
+            raise ValueError("Time points must be sorted in ascending order")
+
+        # Ensure all time points are positive
+        if np.any(t <= 0):
+            raise ValueError("All time points must be positive")
+
+        # Validate quantile bounds
+        if not (0 <= lo < hi <= 1):
+            raise ValueError("Quantile bounds must satisfy 0 <= lo < hi <= 1")
+
+        # Generate quantile levels
+        quantile_levels = torch.linspace(lo, hi, size, device=self.device)
+
+        # Reset to beginning
+        self.reset(self.num_paths)
+
+        # Initialize result tensor
+        result = torch.empty((len(t), size), device=self.device)
+
+        # Simulate up to each time point and compute quantiles
+        for i, target_t in enumerate(t):
+            # Simulate from current time to target time
+            while self.ti < target_t:
+                self.step()
+
+            # Compute quantiles for current cumulative returns
+            if normalize:
+                result[i] = torch.quantile(
+                    self.cum_returns, quantile_levels
+                ) / torch.sqrt(torch.tensor(target_t, device=self.device))
+            else:
+                result[i] = torch.quantile(self.cum_returns, quantile_levels)
+
+        return result
+
 
 class GJRGARCH_torch:
     """
-    Standard (raw) GJR–GARCH(1,1) simulator built on the reduced engine.
+    Standard (raw) GJR-GARCH(1,1) simulator built on the reduced engine.
 
     Raw model:
         r_t = μ + ε_t,    ε_t = σ_t z_t
@@ -226,12 +298,12 @@ class GJRGARCH_torch:
         self._eps = 1e-8
 
         # Build reduced engine with normalized initial variance
-        var0_reduced = max(self.sigma0_sq / self.v, self._eps)
+        sigma0_sq_reduced = max(self.sigma0_sq / self.v, self._eps)
         self.reduced = reduced_engine_cls(
             alpha=self.alpha,
             gamma=self.gamma,
             beta=self.beta,
-            var0=var0_reduced,
+            sigma0_sq=sigma0_sq_reduced,
             dist=self.dist,
         )
 
@@ -325,5 +397,80 @@ class GJRGARCH_torch:
 
             # Store cumulative returns at this time point
             result[i] = self.cum_returns
+
+        return result
+
+    def path_quantiles(
+        self,
+        t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray,
+        lo: float = 0.001,
+        hi: float = 0.999,
+        size: int = 512,
+        normalize: bool = True,
+    ) -> torch.Tensor:
+        """
+        Compute quantiles of cumulative returns at specified time points.
+
+        Parameters
+        ----------
+        t : array-like
+            List or array of integers representing time steps (must be sorted).
+            E.g., [4, 10, 12] will return quantiles after 4, 10, and 12 steps.
+        lo : float, default 0.001
+            Lower quantile bound (e.g., 0.001 for 0.1th percentile).
+        hi : float, default 0.999
+            Upper quantile bound (e.g., 0.999 for 99.9th percentile).
+        size : int, default 512
+            Number of quantiles to compute between lo and hi.
+
+        Returns
+        -------
+        torch.Tensor, shape (len(t), size)
+            Quantiles at each specified time point.
+            First row contains quantiles after t[0] steps, etc.
+        """
+        import numpy as np
+
+        t = np.asarray(t)
+        if len(t) == 0:
+            return torch.empty((0, size), device=self.device)
+
+        # Ensure t is sorted
+        if not np.all(np.diff(t) >= 0):
+            raise ValueError("Time points must be sorted in ascending order")
+
+        # Ensure all time points are positive
+        if np.any(t <= 0):
+            raise ValueError("All time points must be positive")
+
+        # Validate quantile bounds
+        if not (0 <= lo < hi <= 1):
+            raise ValueError("Quantile bounds must satisfy 0 <= lo < hi <= 1")
+
+        # Generate quantile levels
+        quantile_levels = torch.linspace(lo, hi, size, device=self.device)
+
+        # Store original num_paths to restore later
+        original_num_paths = self.num_paths
+
+        # Reset to beginning
+        self.reset(self.num_paths)
+
+        # Initialize result tensor
+        result = torch.empty((len(t), size), device=self.device)
+
+        # Simulate up to each time point and compute quantiles
+        for i, target_t in enumerate(t):
+            # Simulate from current time to target time
+            while self.ti < target_t:
+                self.step()
+
+            # Compute quantiles for current cumulative returns
+            if normalize:
+                result[i] = torch.quantile(
+                    self.cum_returns, quantile_levels
+                ) / torch.sqrt(torch.tensor(target_t, device=self.device))
+            else:
+                result[i] = torch.quantile(self.cum_returns, quantile_levels)
 
         return result

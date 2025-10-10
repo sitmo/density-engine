@@ -43,6 +43,7 @@ repos:
         files: ^density_engine/.*\.py$
       - id: check-yaml
       - id: check-added-large-files
+        exclude: ^jobs/.*\.csv$
       - id: check-merge-conflict
       - id: debug-statements
         files: ^density_engine/.*\.py$
