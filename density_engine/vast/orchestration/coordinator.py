@@ -600,10 +600,12 @@ class OrchestrationCoordinator:
             total_jobs = len(self.state_manager.jobs)
 
             # Create orchestration state using cached data
+            busy_instances = total_instances - idle_instances
             state = OrchestrationState(
                 total_instances=total_instances,
                 active_instances=active_instances,
                 idle_instances=idle_instances,
+                busy_instances=busy_instances,
                 pending_jobs=pending_jobs,
                 running_jobs=running_jobs,
                 completed_jobs=completed_jobs,
@@ -624,6 +626,7 @@ class OrchestrationCoordinator:
                 total_instances=0,
                 active_instances=0,
                 idle_instances=0,
+                busy_instances=0,
                 pending_jobs=0,
                 running_jobs=0,
                 completed_jobs=0,
