@@ -718,6 +718,9 @@ class OrchestrationCoordinator:
 
             # Perform startup verification of instance preparation status
             self._verify_instance_preparation_on_startup()
+            
+            # Check for completed jobs on startup
+            self._check_running_jobs_on_startup()
 
             logger.info("✅ Orchestration system started")
 
@@ -802,6 +805,73 @@ class OrchestrationCoordinator:
 
         except Exception as e:
             logger.error(f"Failed to verify instance preparation on startup: {e}")
+
+    def _check_running_jobs_on_startup(self) -> None:
+        """Check for completed jobs on startup."""
+        try:
+            logger.info("🔍 Checking for completed jobs on startup...")
+            
+            # Get all instances that have running jobs
+            running_jobs = []
+            for job_file, job_info in self.state_manager.jobs.items():
+                if job_info.state == JobState.RUNNING:
+                    running_jobs.append((job_file, job_info.assigned_instance))
+            
+            if not running_jobs:
+                logger.info("No running jobs found on startup")
+                return
+            
+            logger.info(f"Found {len(running_jobs)} running jobs to check")
+            
+            # Check each running job
+            for job_file, instance_id in running_jobs:
+                if instance_id not in self.state_manager.instances:
+                    logger.warning(f"Instance {instance_id} not found for job {job_file}")
+                    continue
+                
+                instance_state = self.state_manager.instances[instance_id]
+                
+                # Create InstanceInfo object
+                instance_info = InstanceInfo(
+                    contract_id=int(instance_id),
+                    machine_id=0,
+                    gpu_name="Unknown",
+                    price_per_hour=0.0,
+                    ssh_host=instance_state.ssh_host,
+                    ssh_port=instance_state.ssh_port,
+                    status="running",
+                    public_ipaddr=instance_state.ssh_host,
+                    ports={},
+                )
+                
+                # Check job completion
+                completion_status = detect_job_completion(instance_info, job_file)
+                
+                if completion_status.completed:
+                    if completion_status.success:
+                        # Job completed successfully
+                        move_job_file(job_file, JobState.RUNNING, JobState.COMPLETED)
+                        self.state_manager.mark_job_completed(job_file, success=True)
+                        
+                        # Schedule result collection
+                        self.scheduler.schedule_result_collection(instance_info, job_file)
+                        
+                        logger.info(f"✅ Job {job_file} completed successfully on startup")
+                    else:
+                        # Job failed
+                        move_job_file(job_file, JobState.RUNNING, JobState.FAILED)
+                        self.state_manager.mark_job_completed(job_file, success=False)
+                        
+                        logger.warning(f"❌ Job {job_file} failed on startup")
+                else:
+                    # Job is still running, schedule monitoring
+                    self.scheduler.schedule_job_status_check(instance_info, job_file)
+                    logger.info(f"🔄 Job {job_file} still running, scheduled monitoring")
+            
+            logger.info("✅ Running jobs check completed on startup")
+            
+        except Exception as e:
+            logger.error(f"Failed to check running jobs on startup: {e}")
 
     @log_function_call
     def stop_orchestration(self) -> None:
