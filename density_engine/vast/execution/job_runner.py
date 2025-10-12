@@ -109,8 +109,17 @@ def start_job_process(
             result = execute_command(ssh_client, background_cmd, timeout=30)
 
             if not result.success:
-                logger.error(f"❌ Failed to start background job: {result.stderr}")
-                raise JobExecutionError(f"Failed to start job: {result.stderr}")
+                logger.info(f"Job already running or duplicate prevented: {result.stderr}")
+                # This is not an error - it's expected behavior when job is already running
+                # Return a ProcessInfo indicating the job is already running
+                return ProcessInfo(
+                    pid="already_running",
+                    command=cmd,
+                    start_time=str(
+                        ssh_client.execute_command("date", timeout=5).stdout.strip()
+                    ),
+                    status="already_running",
+                )
 
             # Give the job a moment to start and write to log file
             import time
