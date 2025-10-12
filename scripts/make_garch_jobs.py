@@ -59,7 +59,7 @@ def uniform_to_theta(u):
     return eta, lam, var0, alpha, gamma, beta
 
 
-def generate_jobs_csv(seed, num_jobs_pow, output_filename):
+def generate_jobs_csv(seed, num_jobs_pow, output_filename, chunk_size=100):
     """
     Generate a single CSV file with all job parameters.
     
@@ -67,6 +67,7 @@ def generate_jobs_csv(seed, num_jobs_pow, output_filename):
         seed: Random seed for reproducibility
         num_jobs_pow: Number of jobs as 2^num_jobs_pow
         output_filename: Name of the output CSV file
+        chunk_size: Number of rows per chunk (default: 100)
     """
     num_jobs = 2**num_jobs_pow
 
@@ -101,6 +102,72 @@ def generate_jobs_csv(seed, num_jobs_pow, output_filename):
     return df
 
 
+def generate_chunked_jobs(seed, num_jobs_pow, base_filename, chunk_size=100):
+    """
+    Generate chunked CSV files with job parameters.
+    
+    Args:
+        seed: Random seed for reproducibility
+        num_jobs_pow: Number of jobs as 2^num_jobs_pow
+        base_filename: Base name for output files (without extension)
+        chunk_size: Number of rows per chunk (default: 100)
+    """
+    num_jobs = 2**num_jobs_pow
+
+    bits = int(0.5 + np.log2(num_jobs))
+
+    sobol_engine = qmc.Sobol(d=7, scramble=True, optimization='random-cd', bits=bits, seed=seed)
+    sobol_points = sobol_engine.random(n=num_jobs).astype(np.float32)
+
+    # enhance surface/boundary coverage to reduce extrapolation
+    sobol_points[:,:6] = np.clip(sobol_points[:,:6] * 1.1 - 0.05, 0, 1)
+
+    # Train-test split dimension
+    p = sobol_points[:, 6]
+
+    # Convert Sobol points to GJR-GARCH Parameters (Theta)
+    eta, lam, var0, alpha, gamma, beta = uniform_to_theta(sobol_points)
+
+    df = pd.DataFrame({
+        'eta': eta,
+        'lam': lam,
+        'var0': var0,
+        'alpha': alpha,
+        'gamma': gamma,
+        'beta': beta,
+        'p': p
+    })
+
+    # Create todo directory
+    todo_dir = Path("jobs/todo")
+    todo_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Calculate number of chunks
+    num_chunks = (num_jobs + chunk_size - 1) // chunk_size
+    
+    chunk_files = []
+    
+    for i in range(num_chunks):
+        start_row = i * chunk_size
+        end_row = min((i + 1) * chunk_size, num_jobs)
+        
+        # Create chunk filename with zero-padded row numbers
+        chunk_filename = f"{base_filename}_{start_row:04d}_{end_row-1:04d}.csv"
+        chunk_path = todo_dir / chunk_filename
+        
+        # Extract chunk data
+        chunk_df = df.iloc[start_row:end_row].copy()
+        
+        # Save chunk
+        chunk_df.to_csv(chunk_path, index=False)
+        chunk_files.append(chunk_path)
+        
+        print(f"✅ Saved chunk {i+1}/{num_chunks}: rows {start_row}-{end_row-1} to {chunk_filename}")
+    
+    print(f"📁 Generated {num_chunks} chunk files in {todo_dir}")
+    return chunk_files
+
+
 if __name__ == "__main__":
     print("🚀 Generating GARCH job parameter files")
     print("=" * 50)
@@ -109,7 +176,7 @@ if __name__ == "__main__":
     output_dir = Path("jobs")
     output_dir.mkdir(exist_ok=True)
     
-    # Generate training set jobs (130k parameter cases)
+    # Generate training set jobs (130k parameter cases) - both full and chunked
     print("📊 Generating training set jobs (130k parameter cases)...")
     train_df = generate_jobs_csv(
         seed=0, 
@@ -117,7 +184,16 @@ if __name__ == "__main__":
         output_filename=output_dir / "garch_training_jobs.csv"
     )
     
-    # Generate test set jobs (32k parameter cases)
+    # Generate chunked training jobs
+    print("📦 Generating chunked training jobs...")
+    train_chunks = generate_chunked_jobs(
+        seed=0,
+        num_jobs_pow=17,
+        base_filename="garch_training_job",
+        chunk_size=100
+    )
+    
+    # Generate test set jobs (32k parameter cases) - both full and chunked
     print("📊 Generating test set jobs (32k parameter cases)...")
     test_df = generate_jobs_csv(
         seed=1, 
@@ -125,9 +201,21 @@ if __name__ == "__main__":
         output_filename=output_dir / "garch_test_jobs.csv"
     )
     
+    # Generate chunked test jobs
+    print("📦 Generating chunked test jobs...")
+    test_chunks = generate_chunked_jobs(
+        seed=1,
+        num_jobs_pow=15,
+        base_filename="garch_test_job",
+        chunk_size=100
+    )
+    
     print()
     print("🎉 Job generation complete!")
     print(f"📁 Training jobs: {len(train_df):,} rows saved to jobs/garch_training_jobs.csv")
     print(f"📁 Test jobs: {len(test_df):,} rows saved to jobs/garch_test_jobs.csv")
+    print(f"📦 Training chunks: {len(train_chunks)} files in jobs/todo/")
+    print(f"📦 Test chunks: {len(test_chunks)} files in jobs/todo/")
     print()
     print("💡 You can now orchestrate job processing and result collection separately.")
+    print("💡 Use the chunked files in jobs/todo/ as a job queue for distributed processing.")

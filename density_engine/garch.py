@@ -168,6 +168,7 @@ class GJRGARCHReduced_torch:
         hi: float = 0.999,
         size: int = 512,
         normalize: bool = True,
+        center: bool = True,
     ) -> torch.Tensor:
         """
         Compute quantiles of cumulative returns at specified time points.
@@ -183,6 +184,8 @@ class GJRGARCHReduced_torch:
             Upper quantile bound (e.g., 0.999 for 99.9th percentile).
         size : int, default 512
             Number of quantiles to compute between lo and hi.
+        center : bool, default True
+            If True, subtract the average of cum_returns before computing quantiles.
 
         Returns
         -------
@@ -224,12 +227,16 @@ class GJRGARCHReduced_torch:
                 self.step()
 
             # Compute quantiles for current cumulative returns
+            cum_returns_for_quantiles = self.cum_returns
+            if center:
+                cum_returns_for_quantiles = self.cum_returns - self.cum_returns.mean()
+
             if normalize:
                 result[i] = torch.quantile(
-                    self.cum_returns, quantile_levels
+                    cum_returns_for_quantiles, quantile_levels
                 ) / torch.sqrt(torch.tensor(target_t, device=self.device))
             else:
-                result[i] = torch.quantile(self.cum_returns, quantile_levels)
+                result[i] = torch.quantile(cum_returns_for_quantiles, quantile_levels)
 
         return result
 
@@ -407,6 +414,7 @@ class GJRGARCH_torch:
         hi: float = 0.999,
         size: int = 512,
         normalize: bool = True,
+        center: bool = True,
     ) -> torch.Tensor:
         """
         Compute quantiles of cumulative returns at specified time points.
@@ -422,6 +430,8 @@ class GJRGARCH_torch:
             Upper quantile bound (e.g., 0.999 for 99.9th percentile).
         size : int, default 512
             Number of quantiles to compute between lo and hi.
+        center : bool, default True
+            If True, subtract the average of cum_returns before computing quantiles.
 
         Returns
         -------
@@ -466,11 +476,15 @@ class GJRGARCH_torch:
                 self.step()
 
             # Compute quantiles for current cumulative returns
+            cum_returns_for_quantiles = self.cum_returns
+            if center:
+                cum_returns_for_quantiles = self.cum_returns - self.cum_returns.mean()
+
             if normalize:
                 result[i] = torch.quantile(
-                    self.cum_returns, quantile_levels
+                    cum_returns_for_quantiles, quantile_levels
                 ) / torch.sqrt(torch.tensor(target_t, device=self.device))
             else:
-                result[i] = torch.quantile(self.cum_returns, quantile_levels)
+                result[i] = torch.quantile(cum_returns_for_quantiles, quantile_levels)
 
         return result

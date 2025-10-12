@@ -7,15 +7,17 @@ license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.14"
-numpy = "^2.3.3"
+python = ">=3.10,<3.14"
+numpy = "^1.24.0"
 matplotlib = "^3.10.6"
-torch = "^2.8.0"
-scipy = "^1.16.2"
-pandas = "^2.2.0"
+torch = "^2.0.0"
+scipy = "^1.11.0"
+pandas = "^1.5.0"
 huggingface-hub = "^0.24.0"
 python-dotenv = "^1.0.0"
 pyarrow = "^21.0.0"
+paramiko = "^4.0.0"
+scp = "^0.15.0"
 
 
 [tool.poetry.group.dev.dependencies]

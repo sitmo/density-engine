@@ -55,8 +55,8 @@ def parse_arguments():
     parser.add_argument(
         '--stride',
         type=int,
-        default=1024,
-        help='Number of rows to process at a time (default: 1024)'
+        default=1,
+        help='Number of rows to process at a time (default: 1)'
     )
     
     parser.add_argument(
