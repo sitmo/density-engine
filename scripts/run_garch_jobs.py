@@ -98,6 +98,9 @@ def process_job_file(jobfile_path, start_row, end_row, stride, num_sim, num_quan
         sys.exit(1)
     
     print(f"Processing job file: {jobfile_path}")
+    print(f"DEBUG: jobfile_path.parent = {jobfile_path.parent}")
+    print(f"DEBUG: jobfile_path.parent.absolute() = {jobfile_path.parent.absolute()}")
+    print(f"DEBUG: Current working directory = {Path.cwd()}")
     print(f"Start row: {start_row}")
     print(f"End row: {end_row if end_row is not None else 'infinity'}")
     print(f"Stride: {stride}")
@@ -211,9 +214,9 @@ def process_job_file(jobfile_path, start_row, end_row, stride, num_sim, num_quan
                 print(f"Streaming completed: processed {processed_count} rows")
             
             if end_row is None:
-                filename = 'jobs/' + jobfile_path.stem +f'_{start_row}_streaming_{stride}_{num_sim}_{num_quantiles}' + '.parquet'
+                filename = str(jobfile_path.parent.absolute() / (jobfile_path.stem +f'_{start_row}_streaming_{stride}_{num_sim}_{num_quantiles}' + '.parquet'))
             else:
-                filename = jobfile_path.stem +f'_{start_row}_{end_row}_{stride}_{num_sim}_{num_quantiles}' + '.parquet'
+                filename = str(jobfile_path.parent.absolute() / (jobfile_path.stem +f'_{start_row}_{end_row}_{stride}_{num_sim}_{num_quantiles}' + '.parquet'))
             df = pd.DataFrame(data)
             df[df.select_dtypes(np.float64).columns] = df.select_dtypes(np.float64).astype(np.float32)
             print('saving', filename)
