@@ -222,7 +222,7 @@ class WorkflowManager:
                     break
 
                 # Sleep between cycles
-                time.sleep(5)
+                time.sleep(10)  # Increased from 5 to 10 seconds to reduce API hammering
 
             # Stop the workflow
             self.stop_workflow()

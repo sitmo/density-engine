@@ -571,138 +571,64 @@ class OrchestrationCoordinator:
 
     @log_function_call
     def get_orchestration_state(self) -> OrchestrationState:
-        """Get current orchestration state with live verification."""
+        """Get current orchestration state using cached data to avoid API hammering."""
         try:
-            # Get live instance data from vast.ai API
-            live_instances = discover_active_instances()
-
-            # Count instances by live status
-            total_instances = len(live_instances)
+            # Use cached instance data instead of making API calls every time
+            # This prevents hammering the vast.ai API with frequent requests
+            
+            # Count instances from cached state
+            total_instances = len(self.state_manager.instances)
             active_instances = sum(
                 1
-                for i in live_instances
-                if i.status in [InstanceStatus.RUNNING, InstanceStatus.READY]
+                for instance in self.state_manager.instances.values()
+                if instance.status in [InstanceStatus.RUNNING, InstanceStatus.READY]
             )
-
-            # Count jobs by live verification (only check a few to avoid overwhelming the system)
-            total_jobs = len(self.state_manager.jobs)
-            pending_jobs = sum(
-                1 for j in self.state_manager.jobs.values() if j.state == JobState.TODO
+            idle_instances = len(self.state_manager.get_idle_instances())
+            
+            # Count jobs from cached state
+            pending_jobs = len(self.state_manager.get_available_jobs())
+            running_jobs = sum(
+                1
+                for job in self.state_manager.jobs.values()
+                if job.state.value == "running"
             )
-
-            # For running jobs, do live verification on a sample to get accurate count
-            # This is expensive, so we'll do it selectively
-            actually_running_jobs = 0
-            actually_idle_instances = 0
-
-            # Check instances that are marked as having running jobs
-            for instance_state in self.state_manager.instances.values():
-                if (
-                    instance_state.job_state in ["running", "assigned"]
-                    and instance_state.current_job
-                ):
-                    # Find the corresponding live instance
-                    live_instance = None
-                    for li in live_instances:
-                        if str(li.contract_id) == instance_state.contract_id:
-                            live_instance = li
-                            break
-
-                    if live_instance:
-                        # Check if the job is actually running
-                        try:
-                            from ..execution.process_monitor import (
-                                monitor_job_execution,
-                            )
-
-                            job_status = monitor_job_execution(
-                                live_instance, instance_state.current_job
-                            )
-                            if job_status.value == "running":
-                                actually_running_jobs += 1
-                            else:
-                                # Job is not actually running, mark as completed/failed
-                                logger.info(
-                                    f"Job {instance_state.current_job} on instance {instance_state.contract_id} is not actually running (status: {job_status.value})"
-                                )
-                                # Update state to reflect reality
-                                job_info = self.state_manager.jobs.get(
-                                    instance_state.current_job
-                                )
-                                if job_info:
-                                    job_info.state = (
-                                        JobState.COMPLETED
-                                        if job_status.value == "completed"
-                                        else JobState.FAILED
-                                    )
-                                    job_info.end_time = datetime.now()
-                                    instance_state.job_state = "idle"
-                                    instance_state.current_job = None
-                        except Exception as e:
-                            logger.warning(
-                                f"Could not verify job status for {instance_state.current_job}: {e}"
-                            )
-                            # If we can't verify, assume the job has finished (conservative approach)
-                            logger.info(
-                                f"Assuming job {instance_state.current_job} has finished due to verification failure"
-                            )
-                            job_info = self.state_manager.jobs.get(
-                                instance_state.current_job
-                            )
-                            if job_info:
-                                job_info.state = (
-                                    JobState.FAILED
-                                )  # Mark as failed since we can't verify
-                                job_info.end_time = datetime.now()
-                                instance_state.job_state = "idle"
-                                instance_state.current_job = None
-                    else:
-                        logger.warning(
-                            f"Instance {instance_state.contract_id} not found in live instances"
-                        )
-
-            # Count idle instances (instances that are ready and not assigned to jobs)
-            for live_instance in live_instances:
-                if live_instance.status in [
-                    InstanceStatus.RUNNING,
-                    InstanceStatus.READY,
-                ]:
-                    # Check if this instance has any running jobs
-                    has_running_job = False
-                    for job_info in self.state_manager.jobs.values():
-                        if (
-                            job_info.state == JobState.RUNNING
-                            and job_info.assigned_instance
-                            == str(live_instance.contract_id)
-                        ):
-                            has_running_job = True
-                            break
-
-                    if not has_running_job:
-                        actually_idle_instances += 1
-
             completed_jobs = sum(
                 1
-                for j in self.state_manager.jobs.values()
-                if j.state == JobState.COMPLETED
+                for job in self.state_manager.jobs.values()
+                if job.state.value == "completed"
             )
+            total_jobs = len(self.state_manager.jobs)
 
+            # Create orchestration state using cached data
             state = OrchestrationState(
                 total_instances=total_instances,
                 active_instances=active_instances,
-                idle_instances=actually_idle_instances,
-                busy_instances=total_instances - actually_idle_instances,
-                total_jobs=total_jobs,
+                idle_instances=idle_instances,
                 pending_jobs=pending_jobs,
-                running_jobs=actually_running_jobs,
+                running_jobs=running_jobs,
                 completed_jobs=completed_jobs,
+                total_jobs=total_jobs,
+            )
+
+            logger.debug(
+                f"Orchestration state: {active_instances} active, {idle_instances} idle, "
+                f"{pending_jobs} pending, {running_jobs} running, {completed_jobs} completed"
             )
 
             return state
 
         except Exception as e:
             logger.error(f"Failed to get orchestration state: {e}")
-            return OrchestrationState(0, 0, 0, 0, 0, 0, 0, 0)
+            # Return empty state on error
+            return OrchestrationState(
+                total_instances=0,
+                active_instances=0,
+                idle_instances=0,
+                pending_jobs=0,
+                running_jobs=0,
+                completed_jobs=0,
+                total_jobs=0,
+            )
 
     @log_function_call
     def start_orchestration(self) -> None:
