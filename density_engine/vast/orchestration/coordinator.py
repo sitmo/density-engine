@@ -468,9 +468,9 @@ class OrchestrationCoordinator:
                 from ..execution.process_monitor import compute_instance_job_status
                 remote_status = compute_instance_job_status(instance)
                 
-                # CRITICAL: Only assign if NO jobs are running AND there are not completed jobs
+                # CRITICAL: Only assign if there are pending jobs (CSV files without parquet files)
                 if remote_status.pending_jobs == 0:
-                    logger.info(f"Instance {instance.contract_id} has no not completed jobs, skipping assignment")
+                    logger.info(f"Instance {instance.contract_id} has no pending jobs (all CSV files have parquet files), skipping assignment")
                     continue
                 
                 # CRITICAL: Check if ANY run_garch_jobs.py is running (ONLY ONE JOB PER INSTANCE)
@@ -479,6 +479,12 @@ class OrchestrationCoordinator:
                     continue
 
                 job = available_jobs[assigned_count]
+
+                # Check if job is already assigned or running to prevent duplicates
+                job_info = self.state_manager.get_job(job.job_file)
+                if job_info and job_info.state in [JobState.RUNNING, JobState.COMPLETED]:
+                    logger.warning(f"Job {job.job_file} is already {job_info.state.value}, skipping duplicate assignment")
+                    continue
 
                 # Schedule job execution
                 if self.scheduler.schedule_job_execution(instance, job.job_file):
