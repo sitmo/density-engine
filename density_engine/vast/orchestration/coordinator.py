@@ -315,6 +315,9 @@ class OrchestrationCoordinator:
                 )
 
                 logger.info(f"✅ Job {job_file} started on instance {instance_id}")
+                
+                # Schedule job status monitoring
+                self.scheduler.schedule_job_status_check(instance_info, job_file)
             else:
                 # Move job back to todo
                 move_job_file(job_file, JobState.RUNNING, JobState.TODO)

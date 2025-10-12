@@ -141,6 +141,20 @@ class TaskScheduler:
             logger.error(f"Failed to schedule job execution: {e}")
             return False
 
+    def schedule_job_status_check(self, instance: Any, job_file: str) -> bool:
+        """Schedule job status check task."""
+        try:
+            task = self.create_task(
+                TaskType.CHECK_JOB_STATUS,
+                instance_id=str(instance.contract_id),
+                job_file=job_file,
+                priority=2,  # Lower priority than job execution
+            )
+            return self.schedule_task(task, priority=2)
+        except Exception as e:
+            logger.error(f"Failed to schedule job status check: {e}")
+            return False
+
     def schedule_result_collection(self, instance: Any, job_file: str) -> bool:
         """Schedule result collection task."""
         try:
