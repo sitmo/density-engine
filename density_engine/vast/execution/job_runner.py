@@ -59,7 +59,8 @@ def upload_job_file(instance: InstanceInfo, job_file: Path) -> bool:
                     f"Failed to create remote directory {remote_dir}: {result.stderr}"
                 )
 
-            # Upload the job file
+            # Upload the job file directly to /root/density-engine/ (root directory)
+            # Extract just the filename, ignoring any subdirectory structure
             remote_path = f"{remote_dir}/{job_file.name}"
             success = upload_file(ssh_client, str(job_file), remote_path)
 
@@ -101,7 +102,7 @@ def start_job_process(
 
             # Start job in background using nohup
             background_cmd = (
-                f"cd /root/density-engine && nohup {cmd} > {log_file} 2>&1 &"
+                f"cd /root/density-engine && nohup bash -c 'source /venv/main/bin/activate && {cmd}' > {log_file} 2>&1 &"
             )
 
             logger.info(f"🚀 Executing command: {background_cmd}")
@@ -130,9 +131,8 @@ def start_job_process(
                 pid = pid_result.stdout.strip().split("\n")[0]
                 logger.info(f"📋 Job started with PID: {pid}")
             else:
-                logger.warning(
-                    "Could not determine job PID - will check log file instead"
-                )
+                # Exit code 1 from grep is normal when no process is found - not an error
+                logger.info(f"📋 No running process found for job {job_file} (this is normal if job finished quickly)")
                 # Check if the job failed immediately by looking at the log
                 if log_check_result.success and "log file not found" not in log_check_result.stdout:
                     cat_cmd = f"cat {log_file}"
@@ -167,8 +167,8 @@ def generate_job_command(job_file: str, args: dict[str, Any]) -> str:
         # Build arguments string
         args_str = " ".join([f"--{key} {value}" for key, value in args.items()])
 
-        # Generate the command with full path
-        cmd = f"python3 scripts/run_garch_jobs.py jobs/running/{job_file} {args_str}"
+        # Generate the command (without virtual environment activation - handled by bash wrapper)
+        cmd = f"python3 scripts/run_garch_jobs.py /root/density-engine/{job_file} {args_str}"
 
         logger.debug(f"Generated command: {cmd}")
         return cmd
