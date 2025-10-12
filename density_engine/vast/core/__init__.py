@@ -5,7 +5,6 @@ Core modules for the vast.ai automation system.
 from .files import JobState, copy_file, move_file, move_job_file
 from .jobs import (
     discover_job_files,
-    get_job_arguments,
     parse_job_file,
     validate_job_file,
 )

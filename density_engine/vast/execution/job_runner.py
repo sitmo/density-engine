@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..core.jobs import get_job_arguments
+from ..core.jobs import parse_job_file
 from ..core.ssh import SSHClient, create_ssh_connection, execute_command, upload_file
 from ..instances.discovery import InstanceInfo
 from ..utils.exceptions import JobExecutionError
@@ -180,8 +180,8 @@ def execute_job_on_instance(instance: InstanceInfo, job_file: Path) -> bool:
         if not upload_job_file(instance, job_file):
             return False
 
-        # Get job arguments
-        args = get_job_arguments(job_file)
+        # Use default job arguments
+        args = {"num_sim": 1000000, "num_quantiles": 512, "stride": 1}
 
         # Start job process
         process_info = start_job_process(instance, job_file.name, args)
@@ -216,8 +216,8 @@ def run_job_with_monitoring(
                 error_message="Failed to upload job file",
             )
 
-        # Get job arguments
-        args = get_job_arguments(job_file)
+        # Use default job arguments
+        args = {"num_sim": 1000000, "num_quantiles": 512, "stride": 1}
 
         # Start job process
         process_info = start_job_process(instance, job_file.name, args)
