@@ -258,7 +258,7 @@ class OrchestrationCoordinator:
                 logger.error(f"Failed to move job file {job_file} to running state")
                 return False
 
-            # Execute job
+            # Execute job (upload from local jobs/running/ but to remote root directory)
             success = execute_job_on_instance(
                 instance_info, Path(f"jobs/running/{job_file}")
             )
@@ -463,6 +463,20 @@ class OrchestrationCoordinator:
             for instance in idle_instances:
                 if assigned_count >= len(available_jobs):
                     break
+
+                # Check remote instance status before assigning new job
+                from ..execution.process_monitor import compute_instance_job_status
+                remote_status = compute_instance_job_status(instance)
+                
+                # CRITICAL: Only assign if NO jobs are running AND there are not completed jobs
+                if remote_status.pending_jobs == 0:
+                    logger.info(f"Instance {instance.contract_id} has no not completed jobs, skipping assignment")
+                    continue
+                
+                # CRITICAL: Check if ANY run_garch_jobs.py is running (ONLY ONE JOB PER INSTANCE)
+                if "running" in remote_status.status_summary and "0 running" not in remote_status.status_summary:
+                    logger.warning(f"Instance {instance.contract_id} already has running jobs, skipping assignment to prevent multiple jobs")
+                    continue
 
                 job = available_jobs[assigned_count]
 
