@@ -148,6 +148,19 @@ def prepare_instance_for_jobs(instance: InstanceInfo) -> bool:
         ssh_client.connect()
 
         try:
+            # Create simple folder structure (no state subfolders)
+            create_folders_cmd = """
+            mkdir -p /root/density-engine
+            echo "Created simple folder structure"
+            """
+            folders_result = execute_command(ssh_client, create_folders_cmd, timeout=30)
+            if not folders_result.success:
+                logger.error(
+                    f"Failed to create folder structure: {folders_result.stderr}"
+                )
+                return False
+            logger.info("✅ Created simple folder structure")
+
             # Check if torch is installed
             if not check_torch_installation(ssh_client):
                 logger.error(

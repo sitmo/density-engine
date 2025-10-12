@@ -241,7 +241,7 @@ class OrchestrationCoordinator:
                 )
                 logger.error(f"❌ Instance {instance_id} preparation failed")
 
-            return success
+            return success  # type: ignore[return]
 
         except Exception as e:
             logger.error(f"Failed to prepare instance: {e}")
@@ -307,7 +307,7 @@ class OrchestrationCoordinator:
                 move_job_file(job_file, JobState.RUNNING, JobState.TODO)
                 logger.debug(f"Job {job_file} assignment skipped (likely already running)")
 
-            return success
+            return success  # type: ignore[return]
 
         except Exception as e:
             logger.error(f"Failed to start job: {e}")

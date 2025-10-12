@@ -63,15 +63,15 @@ def fetch_instances_from_api() -> list[dict[str, Any]]:
             # Try to parse as JSON first
             instances_data = json.loads(output)
             if isinstance(instances_data, dict) and "instances" in instances_data:
-                instances = instances_data["instances"]
+                instances: list[dict[str, Any]] = instances_data["instances"]
             elif isinstance(instances_data, list):
-                instances = instances_data
+                instances: list[dict[str, Any]] = instances_data
             else:
-                instances = [instances_data]
+                instances: list[dict[str, Any]] = [instances_data]
         except json.JSONDecodeError:
             try:
                 # Try to parse as Python literal (ast.literal_eval)
-                instances = ast.literal_eval(output)
+                instances: list[dict[str, Any]] = ast.literal_eval(output)
                 if not isinstance(instances, list):
                     instances = [instances]
             except (ValueError, SyntaxError) as e:
@@ -80,7 +80,7 @@ def fetch_instances_from_api() -> list[dict[str, Any]]:
                 return []
 
         logger.info(f"Fetched {len(instances)} instances from API")
-        return instances
+        return instances  # type: ignore[return]
 
     except subprocess.TimeoutExpired:
         logger.error("Timeout while fetching instances from API")
@@ -174,7 +174,7 @@ def discover_active_instances() -> list[InstanceInfo]:
     """Discover all active instances."""
     try:
         raw_instances = fetch_instances_from_api()
-        instances = []
+        instances: list[InstanceInfo] = []
 
         for raw_data in raw_instances:
             try:

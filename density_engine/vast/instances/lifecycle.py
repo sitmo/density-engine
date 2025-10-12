@@ -13,7 +13,6 @@ from ..utils.logging import get_logger, log_function_call
 logger = get_logger(__name__)
 
 
-@log_function_call
 def start_instance(instance_id: str) -> bool:
     """Start an instance."""
     try:
@@ -42,7 +41,6 @@ def start_instance(instance_id: str) -> bool:
         return False
 
 
-@log_function_call
 def stop_instance(instance_id: str) -> bool:
     """Stop an instance."""
     try:
@@ -71,7 +69,6 @@ def stop_instance(instance_id: str) -> bool:
         return False
 
 
-@log_function_call
 def restart_instance(instance_id: str) -> bool:
     """Restart an instance."""
     try:
@@ -99,7 +96,6 @@ def restart_instance(instance_id: str) -> bool:
         return False
 
 
-@log_function_call
 def terminate_instance(instance_id: str) -> bool:
     """Terminate an instance."""
     try:
@@ -130,7 +126,6 @@ def terminate_instance(instance_id: str) -> bool:
         return False
 
 
-@log_function_call
 def manage_instance_lifecycle(
     instance: InstanceInfo, desired_state: InstanceStatus
 ) -> bool:
@@ -147,20 +142,20 @@ def manage_instance_lifecycle(
                 logger.info(f"Instance {instance_id} is already running")
                 return True
             else:
-                return start_instance(instance_id)
+                return start_instance(instance_id)  # type: ignore[return]
 
         elif desired_state == InstanceStatus.STOPPED:
             if instance.status == "stopped":
                 logger.info(f"Instance {instance_id} is already stopped")
                 return True
             else:
-                return stop_instance(instance_id)
+                return stop_instance(instance_id)  # type: ignore[return]
 
         elif desired_state == InstanceStatus.RESTARTING:
-            return restart_instance(instance_id)
+            return restart_instance(instance_id)  # type: ignore[return]
 
         elif desired_state == InstanceStatus.TERMINATED:
-            return terminate_instance(instance_id)
+            return terminate_instance(instance_id)  # type: ignore[return]
 
         else:
             logger.warning(f"Unknown desired state: {desired_state}")

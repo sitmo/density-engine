@@ -15,6 +15,19 @@ from .job_runner import ProcessInfo
 logger = get_logger(__name__)
 
 
+@dataclass
+class InstanceJobStatus:
+    """Status of jobs on an instance."""
+
+    csv_files_count: int
+    parquet_files_count: int
+    csv_files: list[str]
+    parquet_files: list[str]
+    completed_jobs: int
+    pending_jobs: int
+    status_summary: str
+
+
 class JobStatus(Enum):
     """Job status."""
 
@@ -62,9 +75,14 @@ def find_process_by_name(
         ssh_client.connect()
 
         try:
-            # Use ps aux to find processes
-            cmd = f"ps aux | grep '{process_name}' | grep -v grep"
+            # Use ps aux to find processes (exclude bash wrappers)
+            cmd = f"ps aux | grep '{process_name}' | grep -v grep | grep -v 'bash -c'"
+            logger.info(f"Executing process search command: {cmd}")
             result = execute_command(ssh_client, cmd, timeout=10)
+
+            logger.info(
+                f"Process search result: success={result.success}, stdout='{result.stdout.strip()}', stderr='{result.stderr.strip()}'"
+            )
 
             processes = []
             if result.success and result.stdout.strip():
@@ -94,7 +112,6 @@ def find_process_by_name(
         return []
 
 
-@log_function_call
 def check_process_running(instance: InstanceInfo, process_id: str) -> bool:
     """Check if a process is running on an instance."""
     try:
@@ -115,7 +132,7 @@ def check_process_running(instance: InstanceInfo, process_id: str) -> bool:
             logger.debug(
                 f"Process {process_id} is {'running' if is_running else 'not running'}"
             )
-            return is_running
+            return is_running  # type: ignore[return]
 
         finally:
             ssh_client.close()
@@ -125,7 +142,6 @@ def check_process_running(instance: InstanceInfo, process_id: str) -> bool:
         return False
 
 
-@log_function_call
 def get_process_output(instance: InstanceInfo, log_file: str) -> str:
     """Get process output from log file."""
     try:
@@ -152,7 +168,7 @@ def get_process_output(instance: InstanceInfo, log_file: str) -> str:
 
             if result.success:
                 logger.debug(f"Retrieved {len(result.stdout)} characters from log file")
-                return result.stdout
+                return result.stdout  # type: ignore[return]
             else:
                 logger.warning(f"Failed to read log file: {result.stderr}")
                 return ""
@@ -224,7 +240,7 @@ def monitor_job_execution(instance: InstanceInfo, job_file: str) -> JobStatus:
         )
 
         # Find processes running the job
-        processes = find_process_by_name(instance, f"run_garch_jobs.py {job_file}")
+        processes = find_process_by_name(instance, f"run_garch_jobs.py.*{job_file}")
 
         if processes:
             logger.debug(f"Job {job_file} is running (PID: {processes[0].pid})")
@@ -259,34 +275,118 @@ def monitor_job_execution(instance: InstanceInfo, job_file: str) -> JobStatus:
 def find_parquet_files_for_job(instance: InstanceInfo, job_file: str) -> list[str]:
     """Find parquet files that start with the job file name."""
     try:
-        logger.debug(f"Looking for parquet files for job {job_file} on instance {instance.contract_id}")
-        
+        logger.debug(
+            f"Looking for parquet files for job {job_file} on instance {instance.contract_id}"
+        )
+
         # Create SSH connection
         ssh_client = create_ssh_connection(instance.ssh_host, instance.ssh_port)
         ssh_client.connect()
-        
+
         try:
             # Get job file base name (without .csv extension)
-            job_base = job_file.replace('.csv', '')
-            
+            job_base = job_file.replace(".csv", "")
+
             # Look for parquet files that start with the job base name
             find_cmd = f"find /root/density-engine -name '{job_base}*.parquet' -type f"
             result = execute_command(ssh_client, find_cmd, timeout=10)
-            
+
             if result.success and result.stdout.strip():
-                parquet_files = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
-                logger.info(f"Found {len(parquet_files)} parquet files for job {job_file}: {parquet_files}")
+                parquet_files = [
+                    f.strip() for f in result.stdout.strip().split("\n") if f.strip()
+                ]
+                logger.info(
+                    f"Found {len(parquet_files)} parquet files for job {job_file}: {parquet_files}"
+                )
                 return parquet_files
             else:
                 logger.debug(f"No parquet files found for job {job_file}")
                 return []
-                
+
         finally:
             ssh_client.close()
-            
+
     except Exception as e:
         logger.error(f"Failed to find parquet files for job {job_file}: {e}")
         return []
+
+
+@log_function_call
+def compute_instance_job_status(instance: InstanceInfo) -> InstanceJobStatus:
+    """Compute instance job status using simple process detection + file comparison."""
+    try:
+        logger.debug(f"Computing job status for instance {instance.contract_id}")
+
+        # Create SSH connection
+        ssh_client = create_ssh_connection(instance.ssh_host, instance.ssh_port)
+        ssh_client.connect()
+
+        try:
+            # 1. Check for running jobs using ps aux (count only actual Python processes, not bash wrappers)
+            ps_cmd = "ps aux | grep 'python3 scripts/run_garch_jobs.py' | grep -v grep | grep -v 'bash -c' | wc -l"
+            ps_result = execute_command(ssh_client, ps_cmd, timeout=10)
+            running_jobs = int(ps_result.stdout.strip()) if ps_result.success else 0
+
+            # Debug: Also get the actual process list (filtered)
+            ps_debug_cmd = "ps aux | grep 'python3 scripts/run_garch_jobs.py' | grep -v grep | grep -v 'bash -c'"
+            ps_debug_result = execute_command(ssh_client, ps_debug_cmd, timeout=10)
+            if ps_debug_result.success and ps_debug_result.stdout.strip():
+                lines = ps_debug_result.stdout.strip().split("\n")
+                logger.info(f"Found {len(lines)} actual Python processes:")
+                for i, line in enumerate(lines, 1):
+                    logger.info(f"  Process {i}: {line}")
+            else:
+                logger.info("No actual Python processes found")
+
+            # 2. Get list of CSV files (input jobs)
+            csv_cmd = "find /root/density-engine -name '*.csv' 2>/dev/null | wc -l"
+            csv_result = execute_command(ssh_client, csv_cmd, timeout=10)
+            csv_count = int(csv_result.stdout.strip()) if csv_result.success else 0
+
+            # 3. Get list of parquet files (completed jobs) - same directory as CSV files
+            parquet_cmd = (
+                "find /root/density-engine -name '*.parquet' 2>/dev/null | wc -l"
+            )
+            parquet_result = execute_command(ssh_client, parquet_cmd, timeout=10)
+            parquet_count = (
+                int(parquet_result.stdout.strip()) if parquet_result.success else 0
+            )
+
+            # 4. Calculate not completed jobs
+            not_completed_jobs = csv_count - parquet_count
+
+            # 5. Determine if we can start a new job
+            can_start_job = (running_jobs == 0) and (not_completed_jobs > 0)
+
+            status = InstanceJobStatus(
+                csv_files_count=csv_count,
+                parquet_files_count=parquet_count,
+                csv_files=[],  # Not needed for simple logic
+                parquet_files=[],  # Not needed for simple logic
+                completed_jobs=parquet_count,
+                pending_jobs=not_completed_jobs,
+                status_summary=f"{parquet_count} completed, {not_completed_jobs} not completed, {running_jobs} running",
+            )
+
+            logger.info(
+                f"Instance {instance.contract_id}: {status.status_summary}, can_start: {can_start_job}"
+            )
+            return status
+
+        finally:
+            ssh_client.close()
+
+    except Exception as e:
+        logger.error(f"Failed to compute instance job status: {e}")
+        return InstanceJobStatus(
+            csv_files_count=0,
+            parquet_files_count=0,
+            csv_files=[],
+            parquet_files=[],
+            completed_jobs=0,
+            pending_jobs=0,
+            status_summary="Error computing status",
+        )
 
 
 @log_function_call
@@ -297,8 +397,14 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
             f"Detecting job completion for {job_file} on instance {instance.contract_id}"
         )
 
-        # Check if process is still running
-        processes = find_process_by_name(instance, f"run_garch_jobs.py {job_file}")
+        # Check if process is still running (look for the specific job file in the command)
+        processes = find_process_by_name(instance, f"run_garch_jobs.py.*{job_file}")
+
+        # Debug logging
+        logger.info(f"Looking for process pattern: 'run_garch_jobs.py.*{job_file}'")
+        logger.info(f"Found {len(processes)} matching processes")
+        for proc in processes:
+            logger.info(f"  Process: PID={proc.pid}, Command={proc.command}")
 
         if processes:
             # Job is still running
@@ -308,15 +414,20 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
 
         # Job is not running, check for parquet files
         parquet_files = find_parquet_files_for_job(instance, job_file)
-        
+
         if parquet_files:
             # Found parquet files - job completed successfully
-            logger.info(f"✅ Found {len(parquet_files)} parquet files for job {job_file}")
-            return CompletionStatus(
-                completed=True, success=True, status=JobStatus.COMPLETED,
-                result_files=parquet_files
+            logger.info(
+                f"✅ Found {len(parquet_files)} parquet files for job {job_file}"
             )
-        
+
+            return CompletionStatus(
+                completed=True,
+                success=True,
+                status=JobStatus.COMPLETED,
+                result_files=parquet_files,
+            )
+
         # No parquet files found, check log for errors
         log_file = f"/root/density-engine/{job_file}.log"
         log_content = get_process_output(instance, log_file)
@@ -335,16 +446,22 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
             # Log the full error details for debugging
             logger.error(f"Job {job_file} failed. Full log content:")
             logger.error(f"Log content: {log_content}")
-            
+
             # Extract the actual error message from the log
-            error_lines = [line for line in log_info.last_lines if any(
-                error_indicator in line.lower() 
-                for error_indicator in ["error", "failed", "exception", "traceback"]
-            )]
+            error_lines = [
+                line
+                for line in log_info.last_lines
+                if any(
+                    error_indicator in line.lower()
+                    for error_indicator in ["error", "failed", "exception", "traceback"]
+                )
+            ]
             error_message = "Job failed with errors"
             if error_lines:
-                error_message += f": {'; '.join(error_lines[-3:])}"  # Last 3 error lines
-            
+                error_message += (
+                    f": {'; '.join(error_lines[-3:])}"  # Last 3 error lines
+                )
+
             return CompletionStatus(
                 completed=True,
                 success=False,
@@ -380,7 +497,7 @@ def handle_job_timeout(instance: InstanceInfo, job_file: str) -> bool:
         )
 
         # Find and kill the job process
-        processes = find_process_by_name(instance, f"run_garch_jobs.py {job_file}")
+        processes = find_process_by_name(instance, f"garch.*{job_file}")
 
         if processes:
             # Create SSH connection

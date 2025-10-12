@@ -6,7 +6,7 @@ import functools
 import logging
 import time
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, Callable, TypeVar, cast
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -23,7 +23,9 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def log_function_call(func: Callable[..., Any]) -> Callable[..., Any]:
+F = TypeVar('F', bound=Callable[..., Any])
+
+def log_function_call(func: F) -> F:
     """Decorator to log function calls."""
 
     @functools.wraps(func)
@@ -38,10 +40,10 @@ def log_function_call(func: Callable[..., Any]) -> Callable[..., Any]:
             logger.error(f"{func.__name__} failed with error: {e}")
             raise
 
-    return cast(Callable[..., Any], wrapper)
+    return cast(F, wrapper)
 
 
-def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
+def log_execution_time(func: F) -> F:
     """Decorator to log function execution time."""
 
     @functools.wraps(func)
@@ -60,4 +62,4 @@ def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
             )
             raise
 
-    return cast(Callable[..., Any], wrapper)
+    return cast(F, wrapper)

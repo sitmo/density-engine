@@ -29,6 +29,9 @@ class InstanceStatus(Enum):
     IDLE = "idle"
     ASSIGNED = "assigned"
     FINISHED = "finished"
+    STOPPED = "stopped"
+    RESTARTING = "restarting"
+    TERMINATED = "terminated"
 
 
 @dataclass
