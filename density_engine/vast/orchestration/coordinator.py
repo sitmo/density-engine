@@ -16,6 +16,7 @@ from ..execution.result_handler import collect_job_results, process_job_results
 from ..instances.discovery import InstanceInfo, discover_active_instances
 from ..instances.monitoring import check_instance_health, get_instance_summary
 from ..instances.preparation import prepare_instance_for_jobs, verify_instance_readiness
+from ..core.ssh import create_ssh_connection, execute_command
 from ..utils.exceptions import StateManagementError
 from ..utils.logging import get_logger, log_function_call
 from .scheduler import Task, TaskScheduler, TaskType, get_scheduler
@@ -721,6 +722,9 @@ class OrchestrationCoordinator:
             
             # Check for completed jobs on startup
             self._check_running_jobs_on_startup()
+            
+            # Establish true state by checking all parquet files
+            self._establish_true_state_on_startup()
 
             logger.info("✅ Orchestration system started")
 
@@ -872,6 +876,191 @@ class OrchestrationCoordinator:
             
         except Exception as e:
             logger.error(f"Failed to check running jobs on startup: {e}")
+
+    def _establish_true_state_on_startup(self) -> None:
+        """Establish true state by checking all parquet files on instances vs local files."""
+        try:
+            logger.info("🔍 Establishing true state by checking all parquet files...")
+            
+            # Get all active instances
+            active_instances = []
+            for instance_id, instance_state in self.state_manager.instances.items():
+                if instance_state.status in [InstanceStatus.RUNNING, InstanceStatus.BUSY, InstanceStatus.IDLE]:
+                    instance_info = InstanceInfo(
+                        contract_id=int(instance_id),
+                        machine_id=0,
+                        gpu_name="Unknown",
+                        price_per_hour=0.0,
+                        ssh_host=instance_state.ssh_host,
+                        ssh_port=instance_state.ssh_port,
+                        status="running",
+                        public_ipaddr=instance_state.ssh_host,
+                        ports={},
+                    )
+                    active_instances.append(instance_info)
+            
+            if not active_instances:
+                logger.info("No active instances found for state recovery")
+                return
+            
+            logger.info(f"Checking {len(active_instances)} active instances for parquet files")
+            
+            # Get all local parquet files
+            local_parquet_files = set()
+            results_dir = Path("results")
+            if results_dir.exists():
+                for parquet_file in results_dir.glob("*.parquet"):
+                    local_parquet_files.add(parquet_file.name)
+            
+            logger.info(f"Found {len(local_parquet_files)} local parquet files")
+            
+            # Check each instance for parquet files
+            all_remote_parquet_files = set()
+            instance_parquet_files = {}
+            
+            for instance in active_instances:
+                try:
+                    # Find all parquet files on this instance
+                    from ..execution.process_monitor import find_parquet_files_for_job
+                    
+                    # Get all CSV files to check for corresponding parquet files
+                    csv_files = []
+                    for job_file, job_info in self.state_manager.jobs.items():
+                        if job_info.assigned_instance == str(instance.contract_id):
+                            csv_files.append(job_file)
+                    
+                    # Also check for any parquet files in the root directory
+                    ssh_client = create_ssh_connection(instance.ssh_host, instance.ssh_port)
+                    ssh_client.connect()
+                    
+                    try:
+                        # List all parquet files on the instance
+                        result = execute_command(ssh_client, "find /root/density-engine -name '*.parquet' 2>/dev/null", timeout=30)
+                        if result.success:
+                            remote_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
+                            instance_parquet_files[instance.contract_id] = []
+                            
+                            for file_path in remote_files:
+                                if file_path.strip():
+                                    filename = Path(file_path).name
+                                    all_remote_parquet_files.add(filename)
+                                    instance_parquet_files[instance.contract_id].append(filename)
+                            
+                            logger.info(f"Instance {instance.contract_id}: {len(instance_parquet_files[instance.contract_id])} parquet files")
+                    
+                    finally:
+                        ssh_client.close()
+                
+                except Exception as e:
+                    logger.warning(f"Failed to check parquet files on instance {instance.contract_id}: {e}")
+                    continue
+            
+            # Find missing parquet files (exist remotely but not locally)
+            missing_parquet_files = all_remote_parquet_files - local_parquet_files
+            
+            if missing_parquet_files:
+                logger.info(f"Found {len(missing_parquet_files)} missing parquet files to download")
+                
+                # Download missing parquet files
+                for instance in active_instances:
+                    if instance.contract_id in instance_parquet_files:
+                        instance_files = instance_parquet_files[instance.contract_id]
+                        missing_on_this_instance = [f for f in instance_files if f in missing_parquet_files]
+                        
+                        if missing_on_this_instance:
+                            logger.info(f"Downloading {len(missing_on_this_instance)} missing files from instance {instance.contract_id}")
+                            
+                            # Schedule download for each missing file
+                            for parquet_file in missing_on_this_instance:
+                                # Extract job file name from parquet file name
+                                # Parquet files are named like: garch_test_job_0000_0099_0_streaming_1_1000000_512.parquet
+                                # We need to find the corresponding CSV job file
+                                job_file = self._find_job_file_for_parquet(parquet_file)
+                                if job_file:
+                                    self.scheduler.schedule_result_collection(instance, job_file)
+                                else:
+                                    logger.warning(f"Could not find job file for parquet {parquet_file}")
+            
+            # Update job states based on actual parquet file existence
+            self._update_job_states_from_parquet_files(all_remote_parquet_files, local_parquet_files)
+            
+            logger.info("✅ True state establishment completed")
+            
+        except Exception as e:
+            logger.error(f"Failed to establish true state on startup: {e}")
+
+    def _find_job_file_for_parquet(self, parquet_file: str) -> str | None:
+        """Find the corresponding job file for a parquet file."""
+        try:
+            # Parquet files are named like: garch_test_job_0000_0099_0_streaming_1_1000000_512.parquet
+            # We need to extract the base job name: garch_test_job_0000_0099
+            
+            # Remove .parquet extension
+            base_name = parquet_file.replace('.parquet', '')
+            
+            # Split by underscores and find the job name pattern
+            parts = base_name.split('_')
+            
+            # Look for patterns like: garch_test_job_0000_0099 or garch_training_job_0000_0099
+            for i in range(len(parts) - 1):
+                if parts[i] == 'job' and i + 1 < len(parts):
+                    # Found the job pattern, reconstruct the job file name
+                    job_name = '_'.join(parts[:i+2])  # e.g., garch_test_job_0000_0099
+                    job_file = f"{job_name}.csv"
+                    
+                    # Check if this job file exists in our state
+                    if job_file in self.state_manager.jobs:
+                        return job_file
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Failed to find job file for parquet {parquet_file}: {e}")
+            return None
+
+    def _update_job_states_from_parquet_files(self, remote_parquet_files: set, local_parquet_files: set) -> None:
+        """Update job states based on actual parquet file existence."""
+        try:
+            logger.info("Updating job states based on parquet file existence...")
+            
+            updated_count = 0
+            
+            for job_file, job_info in self.state_manager.jobs.items():
+                # Check if there's a corresponding parquet file
+                job_base_name = job_file.replace('.csv', '')
+                
+                # Look for parquet files that start with this job name
+                matching_parquet_files = [f for f in remote_parquet_files if f.startswith(job_base_name)]
+                
+                if matching_parquet_files:
+                    # Job has parquet files - should be marked as completed
+                    if job_info.state != JobState.COMPLETED:
+                        logger.info(f"Updating job {job_file} from {job_info.state.value} to COMPLETED (found parquet files)")
+                        
+                        # Move job file to completed state
+                        move_job_file(job_file, job_info.state, JobState.COMPLETED)
+                        
+                        # Update job state
+                        self.state_manager.mark_job_completed(job_file, success=True)
+                        
+                        updated_count += 1
+                
+                elif job_info.state == JobState.COMPLETED:
+                    # Job is marked as completed but has no parquet files - this is inconsistent
+                    logger.warning(f"Job {job_file} marked as COMPLETED but has no parquet files - marking as FAILED")
+                    
+                    # Move job file to failed state
+                    move_job_file(job_file, JobState.COMPLETED, JobState.FAILED)
+                    
+                    # Update job state
+                    self.state_manager.mark_job_completed(job_file, success=False)
+                    
+                    updated_count += 1
+            
+            logger.info(f"Updated {updated_count} job states based on parquet file existence")
+            
+        except Exception as e:
+            logger.error(f"Failed to update job states from parquet files: {e}")
 
     @log_function_call
     def stop_orchestration(self) -> None:
