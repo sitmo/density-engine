@@ -111,6 +111,16 @@ def start_job_process(
                 logger.error(f"❌ Failed to start background job: {result.stderr}")
                 raise JobExecutionError(f"Failed to start job: {result.stderr}")
 
+            # Give the job a moment to start and write to log file
+            import time
+            time.sleep(2)
+            
+            # Check if log file exists and has content
+            log_check_cmd = f"test -f {log_file} && wc -l {log_file} || echo 'log file not found'"
+            log_check_result = execute_command(ssh_client, log_check_cmd, timeout=10)
+            if log_check_result.success:
+                logger.info(f"📄 Log file status: {log_check_result.stdout.strip()}")
+            
             # Try to get the process ID
             pid_cmd = f"ps aux | grep 'python3 scripts/run_garch_jobs.py {job_file}' | grep -v grep | awk '{{print $2}}'"
             pid_result = execute_command(ssh_client, pid_cmd, timeout=10)
@@ -123,6 +133,12 @@ def start_job_process(
                 logger.warning(
                     "Could not determine job PID - will check log file instead"
                 )
+                # Check if the job failed immediately by looking at the log
+                if log_check_result.success and "log file not found" not in log_check_result.stdout:
+                    cat_cmd = f"cat {log_file}"
+                    cat_result = execute_command(ssh_client, cat_cmd, timeout=10)
+                    if cat_result.success and cat_result.stdout.strip():
+                        logger.error(f"Job may have failed immediately. Log content: {cat_result.stdout.strip()}")
 
             process_info = ProcessInfo(
                 pid=pid,
@@ -151,8 +167,8 @@ def generate_job_command(job_file: str, args: dict[str, Any]) -> str:
         # Build arguments string
         args_str = " ".join([f"--{key} {value}" for key, value in args.items()])
 
-        # Generate the command
-        cmd = f"python3 scripts/run_garch_jobs.py {job_file} {args_str}"
+        # Generate the command with full path
+        cmd = f"python3 scripts/run_garch_jobs.py jobs/running/{job_file} {args_str}"
 
         logger.debug(f"Generated command: {cmd}")
         return cmd
