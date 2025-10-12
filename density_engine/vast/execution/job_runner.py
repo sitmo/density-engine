@@ -109,7 +109,7 @@ def start_job_process(
             result = execute_command(ssh_client, background_cmd, timeout=30)
 
             if not result.success:
-                logger.info(f"Job already running or duplicate prevented: {result.stderr}")
+                logger.info(f"Job already active on instance: {result.stderr}")
                 # This is not an error - it's expected behavior when job is already running
                 # Return a ProcessInfo indicating the job is already running
                 return ProcessInfo(
