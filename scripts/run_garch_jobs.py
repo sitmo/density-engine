@@ -213,10 +213,19 @@ def process_job_file(jobfile_path, start_row, end_row, stride, num_sim, num_quan
             else:
                 print(f"Streaming completed: processed {processed_count} rows")
             
+            # Debug path resolution
+            print(f"DEBUG: jobfile_path = {jobfile_path}")
+            print(f"DEBUG: jobfile_path.parent = {jobfile_path.parent}")
+            print(f"DEBUG: jobfile_path.parent.absolute() = {jobfile_path.parent.absolute()}")
+            print(f"DEBUG: jobfile_path.stem = {jobfile_path.stem}")
+            print(f"DEBUG: Current working directory = {Path.cwd()}")
+            
             if end_row is None:
                 filename = str(jobfile_path.parent.absolute() / (jobfile_path.stem +f'_{start_row}_streaming_{stride}_{num_sim}_{num_quantiles}' + '.parquet'))
             else:
                 filename = str(jobfile_path.parent.absolute() / (jobfile_path.stem +f'_{start_row}_{end_row}_{stride}_{num_sim}_{num_quantiles}' + '.parquet'))
+            
+            print(f"DEBUG: Final filename = {filename}")
             df = pd.DataFrame(data)
             df[df.select_dtypes(np.float64).columns] = df.select_dtypes(np.float64).astype(np.float32)
             print('saving', filename)
