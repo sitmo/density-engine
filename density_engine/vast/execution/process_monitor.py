@@ -44,6 +44,7 @@ class CompletionStatus:
     success: bool
     status: JobStatus
     error_message: str | None = None
+    result_files: list[str] | None = None
 
 
 @log_function_call
@@ -255,6 +256,40 @@ def monitor_job_execution(instance: InstanceInfo, job_file: str) -> JobStatus:
 
 
 @log_function_call
+def find_parquet_files_for_job(instance: InstanceInfo, job_file: str) -> list[str]:
+    """Find parquet files that start with the job file name."""
+    try:
+        logger.debug(f"Looking for parquet files for job {job_file} on instance {instance.contract_id}")
+        
+        # Create SSH connection
+        ssh_client = create_ssh_connection(instance.ssh_host, instance.ssh_port)
+        ssh_client.connect()
+        
+        try:
+            # Get job file base name (without .csv extension)
+            job_base = job_file.replace('.csv', '')
+            
+            # Look for parquet files that start with the job base name
+            find_cmd = f"find /root/density-engine -name '{job_base}*.parquet' -type f"
+            result = execute_command(ssh_client, find_cmd, timeout=10)
+            
+            if result.success and result.stdout.strip():
+                parquet_files = [f.strip() for f in result.stdout.strip().split('\n') if f.strip()]
+                logger.info(f"Found {len(parquet_files)} parquet files for job {job_file}: {parquet_files}")
+                return parquet_files
+            else:
+                logger.debug(f"No parquet files found for job {job_file}")
+                return []
+                
+        finally:
+            ssh_client.close()
+            
+    except Exception as e:
+        logger.error(f"Failed to find parquet files for job {job_file}: {e}")
+        return []
+
+
+@log_function_call
 def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionStatus:
     """Detect if a job has completed."""
     try:
@@ -271,7 +306,18 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
                 completed=False, success=False, status=JobStatus.RUNNING
             )
 
-        # Job is not running, check log file
+        # Job is not running, check for parquet files
+        parquet_files = find_parquet_files_for_job(instance, job_file)
+        
+        if parquet_files:
+            # Found parquet files - job completed successfully
+            logger.info(f"✅ Found {len(parquet_files)} parquet files for job {job_file}")
+            return CompletionStatus(
+                completed=True, success=True, status=JobStatus.COMPLETED,
+                result_files=parquet_files
+            )
+        
+        # No parquet files found, check log for errors
         log_file = f"/root/density-engine/{job_file}.log"
         log_content = get_process_output(instance, log_file)
 
@@ -280,16 +326,12 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
                 completed=True,
                 success=False,
                 status=JobStatus.UNKNOWN,
-                error_message="No log file found",
+                error_message="No log file found and no parquet files",
             )
 
         log_info = parse_job_log(log_content)
 
-        if log_info.has_completion:
-            return CompletionStatus(
-                completed=True, success=True, status=JobStatus.COMPLETED
-            )
-        elif log_info.has_errors:
+        if log_info.has_errors:
             return CompletionStatus(
                 completed=True,
                 success=False,
@@ -297,11 +339,13 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
                 error_message="Job failed with errors",
             )
         else:
+            # Process not running, no parquet files, no errors in log
+            # This could be a timeout or unexpected termination
             return CompletionStatus(
                 completed=True,
                 success=False,
-                status=JobStatus.UNKNOWN,
-                error_message="Job status unclear",
+                status=JobStatus.TIMEOUT,
+                error_message="Job terminated without producing results",
             )
 
     except Exception as e:

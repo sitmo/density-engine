@@ -337,18 +337,40 @@ class OrchestrationCoordinator:
 
                     logger.info(f"✅ Job {job_file} completed successfully")
                 else:
-                    # Job failed
-                    move_job_file(job_file, JobState.RUNNING, JobState.FAILED)
-                    self.state_manager.mark_job_completed(job_file, success=False)
+                    # Job failed - check if we should retry
+                    job_info = self.state_manager.get_job(job_file)
+                    if job_info and job_info.retry_count < job_info.max_retries:
+                        # Retry the job
+                        job_info.retry_count += 1
+                        logger.warning(
+                            f"🔄 Retrying job {job_file} (attempt {job_info.retry_count}/{job_info.max_retries}): {completion_status.error_message}"
+                        )
+                        
+                        # Move job back to todo for retry
+                        move_job_file(job_file, JobState.RUNNING, JobState.TODO)
+                        self.state_manager.update_job_state(job_file, {
+                            "state": JobState.TODO,
+                            "assigned_instance": None,
+                            "retry_count": job_info.retry_count
+                        })
+                        
+                        # Update instance state
+                        self.state_manager.update_instance_state(
+                            instance_id, {"job_state": "idle", "current_job": None}
+                        )
+                    else:
+                        # Max retries exceeded, mark as permanently failed
+                        move_job_file(job_file, JobState.RUNNING, JobState.FAILED)
+                        self.state_manager.mark_job_completed(job_file, success=False)
 
-                    logger.error(
-                        f"❌ Job {job_file} failed: {completion_status.error_message}"
-                    )
-
-                # Update instance state
-                self.state_manager.update_instance_state(
-                    instance_id, {"job_state": "idle", "current_job": None}
-                )
+                        logger.error(
+                            f"❌ Job {job_file} permanently failed after {job_info.retry_count if job_info else 0} retries: {completion_status.error_message}"
+                        )
+                        
+                        # Update instance state
+                        self.state_manager.update_instance_state(
+                            instance_id, {"job_state": "idle", "current_job": None}
+                        )
 
             return True
 
