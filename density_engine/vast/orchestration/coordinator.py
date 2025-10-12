@@ -109,8 +109,8 @@ class OrchestrationCoordinator:
                     )
                     
                     # Check if instance is already prepared
-                    from ..instances.preparation import check_instance_readiness
-                    is_already_prepared = check_instance_readiness(instance_info)
+                    from ..instances.preparation import verify_instance_readiness
+                    is_already_prepared = verify_instance_readiness(instance_info)
                     
                     instance_state = InstanceState(
                         contract_id=instance_id,
@@ -305,9 +305,7 @@ class OrchestrationCoordinator:
             else:
                 # Move job back to todo
                 move_job_file(job_file, JobState.RUNNING, JobState.TODO)
-                logger.error(
-                    f"❌ Failed to start job {job_file} on instance {instance_id}"
-                )
+                logger.debug(f"Job {job_file} assignment skipped (likely already running)")
 
             return success
 
@@ -509,7 +507,7 @@ class OrchestrationCoordinator:
                 # Check if job is already assigned or running to prevent duplicates
                 job_info = self.state_manager.get_job(job.job_file)
                 if job_info and job_info.state in [JobState.RUNNING, JobState.COMPLETED]:
-                    logger.warning(f"Job {job.job_file} is already {job_info.state.value}, skipping duplicate assignment")
+                    logger.debug(f"Job {job.job_file} is already {job_info.state.value}, skipping duplicate assignment")
                     continue
 
                 # Schedule job execution
