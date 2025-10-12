@@ -92,20 +92,41 @@ class OrchestrationCoordinator:
                 instance_id = str(instance.contract_id)
 
                 if instance_id not in self.state_manager.instances:
-                    # New instance - starts as unprepared
+                    # New instance - check if already prepared before marking as unprepared
+                    logger.info(f"Discovered new instance: {instance_id}, checking if already prepared...")
+                    
+                    # Create InstanceInfo for verification
+                    instance_info = InstanceInfo(
+                        contract_id=int(instance_id),
+                        machine_id=0,
+                        gpu_name="Unknown",
+                        price_per_hour=0.0,
+                        ssh_host=instance.ssh_host,
+                        ssh_port=instance.ssh_port,
+                        status="running",
+                        public_ipaddr=instance.ssh_host,
+                        ports={},
+                    )
+                    
+                    # Check if instance is already prepared
+                    from ..instances.preparation import check_instance_readiness
+                    is_already_prepared = check_instance_readiness(instance_info)
+                    
                     instance_state = InstanceState(
                         contract_id=instance_id,
                         ssh_host=instance.ssh_host,
                         ssh_port=instance.ssh_port,
-                        status=InstanceStatus.STARTING,
+                        status=InstanceStatus.RUNNING if is_already_prepared else InstanceStatus.STARTING,
                         last_updated=task.scheduled_time,
-                        is_prepared=False,  # New instances are not prepared
-                        preparation_verified_at=None,
+                        is_prepared=is_already_prepared,
+                        preparation_verified_at=task.scheduled_time if is_already_prepared else None,
                     )
                     self.state_manager.instances[instance_id] = instance_state
-                    logger.info(
-                        f"Discovered new instance: {instance_id} (not prepared)"
-                    )
+                    
+                    if is_already_prepared:
+                        logger.info(f"✅ Instance {instance_id} is already prepared and ready!")
+                    else:
+                        logger.info(f"Instance {instance_id} needs preparation")
                 else:
                     # Update existing instance - preserve preparation status
                     existing_instance = self.state_manager.instances[instance_id]
@@ -185,6 +206,11 @@ class OrchestrationCoordinator:
                 return False
 
             instance_state = self.state_manager.instances[instance_id]
+
+            # Check if instance is already prepared
+            if instance_state.is_prepared:
+                logger.info(f"Instance {instance_id} is already prepared, skipping preparation")
+                return True
 
             # Create InstanceInfo object
             instance_info = InstanceInfo(
