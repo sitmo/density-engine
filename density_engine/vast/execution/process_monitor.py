@@ -332,11 +332,24 @@ def detect_job_completion(instance: InstanceInfo, job_file: str) -> CompletionSt
         log_info = parse_job_log(log_content)
 
         if log_info.has_errors:
+            # Log the full error details for debugging
+            logger.error(f"Job {job_file} failed. Full log content:")
+            logger.error(f"Log content: {log_content}")
+            
+            # Extract the actual error message from the log
+            error_lines = [line for line in log_info.last_lines if any(
+                error_indicator in line.lower() 
+                for error_indicator in ["error", "failed", "exception", "traceback"]
+            )]
+            error_message = "Job failed with errors"
+            if error_lines:
+                error_message += f": {'; '.join(error_lines[-3:])}"  # Last 3 error lines
+            
             return CompletionStatus(
                 completed=True,
                 success=False,
                 status=JobStatus.FAILED,
-                error_message="Job failed with errors",
+                error_message=error_message,
             )
         else:
             # Process not running, no parquet files, no errors in log
