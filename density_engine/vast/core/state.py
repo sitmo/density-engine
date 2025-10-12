@@ -281,6 +281,11 @@ class StateManager:
         return available_jobs
 
     @log_function_call
+    def get_job(self, job_file: str) -> Optional[JobStateInfo]:
+        """Get job information."""
+        return self.jobs.get(job_file)
+
+    @log_function_call
     def mark_job_assigned(self, job_file: str, instance_id: str) -> bool:
         """Mark a job as assigned to an instance."""
         try:
