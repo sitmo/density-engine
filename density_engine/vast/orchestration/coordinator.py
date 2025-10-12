@@ -93,8 +93,10 @@ class OrchestrationCoordinator:
 
                 if instance_id not in self.state_manager.instances:
                     # New instance - check if already prepared before marking as unprepared
-                    logger.info(f"Discovered new instance: {instance_id}, checking if already prepared...")
-                    
+                    logger.info(
+                        f"Discovered new instance: {instance_id}, checking if already prepared..."
+                    )
+
                     # Create InstanceInfo for verification
                     instance_info = InstanceInfo(
                         contract_id=int(instance_id),
@@ -107,24 +109,33 @@ class OrchestrationCoordinator:
                         public_ipaddr=instance.ssh_host,
                         ports={},
                     )
-                    
+
                     # Check if instance is already prepared
                     from ..instances.preparation import verify_instance_readiness
+
                     is_already_prepared = verify_instance_readiness(instance_info)
-                    
+
                     instance_state = InstanceState(
                         contract_id=instance_id,
                         ssh_host=instance.ssh_host,
                         ssh_port=instance.ssh_port,
-                        status=InstanceStatus.RUNNING if is_already_prepared else InstanceStatus.STARTING,
+                        status=(
+                            InstanceStatus.RUNNING
+                            if is_already_prepared
+                            else InstanceStatus.STARTING
+                        ),
                         last_updated=task.scheduled_time,
                         is_prepared=is_already_prepared,
-                        preparation_verified_at=task.scheduled_time if is_already_prepared else None,
+                        preparation_verified_at=(
+                            task.scheduled_time if is_already_prepared else None
+                        ),
                     )
                     self.state_manager.instances[instance_id] = instance_state
-                    
+
                     if is_already_prepared:
-                        logger.info(f"✅ Instance {instance_id} is already prepared and ready!")
+                        logger.info(
+                            f"✅ Instance {instance_id} is already prepared and ready!"
+                        )
                     else:
                         logger.info(f"Instance {instance_id} needs preparation")
                 else:
@@ -209,7 +220,9 @@ class OrchestrationCoordinator:
 
             # Check if instance is already prepared
             if instance_state.is_prepared:
-                logger.info(f"Instance {instance_id} is already prepared, skipping preparation")
+                logger.info(
+                    f"Instance {instance_id} is already prepared, skipping preparation"
+                )
                 return True
 
             # Create InstanceInfo object
@@ -305,7 +318,9 @@ class OrchestrationCoordinator:
             else:
                 # Move job back to todo
                 move_job_file(job_file, JobState.RUNNING, JobState.TODO)
-                logger.debug(f"Job {job_file} assignment skipped (likely already running)")
+                logger.debug(
+                    f"Job {job_file} assignment skipped (likely already running)"
+                )
 
             return success  # type: ignore[return]
 
@@ -369,15 +384,18 @@ class OrchestrationCoordinator:
                         logger.warning(
                             f"🔄 Retrying job {job_file} (attempt {job_info.retry_count}/{job_info.max_retries}): {completion_status.error_message}"
                         )
-                        
+
                         # Move job back to todo for retry
                         move_job_file(job_file, JobState.RUNNING, JobState.TODO)
-                        self.state_manager.update_job_state(job_file, {
-                            "state": JobState.TODO,
-                            "assigned_instance": None,
-                            "retry_count": job_info.retry_count
-                        })
-                        
+                        self.state_manager.update_job_state(
+                            job_file,
+                            {
+                                "state": JobState.TODO,
+                                "assigned_instance": None,
+                                "retry_count": job_info.retry_count,
+                            },
+                        )
+
                         # Update instance state
                         self.state_manager.update_instance_state(
                             instance_id, {"job_state": "idle", "current_job": None}
@@ -390,7 +408,7 @@ class OrchestrationCoordinator:
                         logger.error(
                             f"❌ Job {job_file} permanently failed after {job_info.retry_count if job_info else 0} retries: {completion_status.error_message}"
                         )
-                        
+
                         # Update instance state
                         self.state_manager.update_instance_state(
                             instance_id, {"job_state": "idle", "current_job": None}
@@ -490,24 +508,43 @@ class OrchestrationCoordinator:
 
                 # Check remote instance status before assigning new job
                 from ..execution.process_monitor import compute_instance_job_status
-                remote_status = compute_instance_job_status(instance)
                 
-                # CRITICAL: Only assign if there are pending jobs (CSV files without parquet files)
-                if remote_status.pending_jobs == 0:
-                    logger.info(f"Instance {instance.contract_id} has no pending jobs (all CSV files have parquet files), skipping assignment")
-                    continue
+                # Convert InstanceState to InstanceInfo for the function
+                instance_info = InstanceInfo(
+                    contract_id=int(instance.contract_id),
+                    machine_id=0,
+                    gpu_name="Unknown",
+                    price_per_hour=0.0,
+                    ssh_host=instance.ssh_host,
+                    ssh_port=instance.ssh_port,
+                    status="running",
+                    public_ipaddr=instance.ssh_host,
+                    ports={},
+                )
                 
+                remote_status = compute_instance_job_status(instance_info)
+
                 # CRITICAL: Check if ANY run_garch_jobs.py is running (ONLY ONE JOB PER INSTANCE)
-                if "running" in remote_status.status_summary and "0 running" not in remote_status.status_summary:
-                    logger.warning(f"Instance {instance.contract_id} already has running jobs, skipping assignment to prevent multiple jobs")
+                if (
+                    "running" in remote_status.status_summary
+                    and "0 running" not in remote_status.status_summary
+                ):
+                    logger.warning(
+                        f"Instance {instance.contract_id} already has running jobs, skipping assignment to prevent multiple jobs"
+                    )
                     continue
 
                 job = available_jobs[assigned_count]
 
                 # Check if job is already assigned or running to prevent duplicates
                 job_info = self.state_manager.get_job(job.job_file)
-                if job_info and job_info.state in [JobState.RUNNING, JobState.COMPLETED]:
-                    logger.debug(f"Job {job.job_file} is already {job_info.state.value}, skipping duplicate assignment")
+                if job_info and job_info.state in [
+                    JobState.RUNNING,
+                    JobState.COMPLETED,
+                ]:
+                    logger.debug(
+                        f"Job {job.job_file} is already {job_info.state.value}, skipping duplicate assignment"
+                    )
                     continue
 
                 # Schedule job execution
@@ -605,7 +642,7 @@ class OrchestrationCoordinator:
         try:
             # Use cached instance data instead of making API calls every time
             # This prevents hammering the vast.ai API with frequent requests
-            
+
             # Count instances from cached state
             total_instances = len(self.state_manager.instances)
             active_instances = sum(
@@ -614,7 +651,7 @@ class OrchestrationCoordinator:
                 if instance.status in [InstanceStatus.RUNNING, InstanceStatus.READY]
             )
             idle_instances = len(self.state_manager.get_idle_instances())
-            
+
             # Count jobs from cached state
             pending_jobs = len(self.state_manager.get_available_jobs())
             running_jobs = sum(
