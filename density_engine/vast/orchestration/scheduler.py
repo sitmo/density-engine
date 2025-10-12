@@ -64,7 +64,6 @@ class TaskScheduler:
         logger.debug(f"Created task: {task_type.value}")
         return task
 
-    @log_function_call
     def schedule_task(self, task: Task, priority: int = 0) -> bool:
         """Schedule a task with priority."""
         try:
@@ -115,7 +114,6 @@ class TaskScheduler:
             logger.error(f"Failed to mark task as completed: {e}")
             return False
 
-    @log_function_call
     def schedule_instance_preparation(self, instance: Any) -> bool:
         """Schedule instance preparation task."""
         try:
@@ -129,7 +127,6 @@ class TaskScheduler:
             logger.error(f"Failed to schedule instance preparation: {e}")
             return False
 
-    @log_function_call
     def schedule_job_execution(self, instance: Any, job_file: str) -> bool:
         """Schedule job execution task."""
         try:
@@ -144,7 +141,6 @@ class TaskScheduler:
             logger.error(f"Failed to schedule job execution: {e}")
             return False
 
-    @log_function_call
     def schedule_result_collection(self, instance: Any, job_file: str) -> bool:
         """Schedule result collection task."""
         try:
@@ -159,7 +155,6 @@ class TaskScheduler:
             logger.error(f"Failed to schedule result collection: {e}")
             return False
 
-    @log_function_call
     def reschedule_failed_task(self, task: Task, delay: timedelta) -> bool:
         """Reschedule a failed task with delay."""
         try:
@@ -193,9 +188,8 @@ class TaskScheduler:
         except Exception as e:
             logger.error(f"Failed to schedule periodic tasks: {e}")
 
-    @log_function_call
     def register_task_handler(
-        self, task_type: TaskType, handler: Callable[..., Any]
+        self, task_type: TaskType, handler: Callable[[Task], bool]
     ) -> None:
         """Register a task handler."""
         try:
@@ -204,7 +198,6 @@ class TaskScheduler:
         except Exception as e:
             logger.error(f"Failed to register task handler: {e}")
 
-    @log_function_call
     def execute_task(self, task: Task) -> bool:
         """Execute a task using its registered handler."""
         try:
@@ -217,7 +210,7 @@ class TaskScheduler:
             handler = self.task_handlers[task.task_type]
             logger.debug(f"Executing task: {task.task_type.value}")
 
-            result = handler(task)
+            result: bool = handler(task)
 
             if result:
                 logger.debug(f"Task completed successfully: {task.task_type.value}")

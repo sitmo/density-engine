@@ -46,7 +46,6 @@ class OrchestrationCoordinator:
         self.running = False
         self._register_task_handlers()
 
-    @log_function_call
     def _register_task_handlers(self) -> None:
         """Register task handlers with the scheduler."""
         try:
@@ -80,7 +79,6 @@ class OrchestrationCoordinator:
         except Exception as e:
             logger.error(f"Failed to register task handlers: {e}")
 
-    @log_function_call
     def _handle_refresh_instances(self, task: Task) -> bool:
         """Handle instance refresh task."""
         try:
@@ -132,7 +130,6 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to refresh instances: {e}")
             return False
 
-    @log_function_call
     def _handle_check_instance_status(self, task: Task) -> bool:
         """Handle instance status check task."""
         try:
@@ -172,7 +169,6 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to check instance status: {e}")
             return False
 
-    @log_function_call
     def _handle_prepare_instance(self, task: Task) -> bool:
         """Handle instance preparation task."""
         try:
@@ -225,7 +221,6 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to prepare instance: {e}")
             return False
 
-    @log_function_call
     def _handle_start_job(self, task: Task) -> bool:
         """Handle job start task."""
         try:
@@ -294,7 +289,6 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to start job: {e}")
             return False
 
-    @log_function_call
     def _handle_check_job_status(self, task: Task) -> bool:
         """Handle job status check task."""
         try:
@@ -362,7 +356,6 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to check job status: {e}")
             return False
 
-    @log_function_call
     def _handle_download_results(self, task: Task) -> bool:
         """Handle result download task."""
         try:
@@ -419,7 +412,6 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to download results: {e}")
             return False
 
-    @log_function_call
     def _handle_assign_jobs(self, task: Task) -> bool:
         """Handle job assignment task."""
         try:
@@ -506,7 +498,6 @@ class OrchestrationCoordinator:
                 f"Failed to schedule preparation for unprepared instances: {e}"
             )
 
-    @log_function_call
     def _handle_discover_jobs(self, task: Task) -> bool:
         """Handle job discovery task."""
         try:

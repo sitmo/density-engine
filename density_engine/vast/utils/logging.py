@@ -6,7 +6,7 @@ import functools
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -38,7 +38,7 @@ def log_function_call(func: Callable[..., Any]) -> Callable[..., Any]:
             logger.error(f"{func.__name__} failed with error: {e}")
             raise
 
-    return wrapper
+    return cast(Callable[..., Any], wrapper)
 
 
 def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -60,4 +60,4 @@ def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
             )
             raise
 
-    return wrapper
+    return cast(Callable[..., Any], wrapper)

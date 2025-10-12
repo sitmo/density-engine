@@ -46,7 +46,7 @@ class InstanceState:
     preparation_verified_at: datetime | None = (
         None  # When preparation was last verified
     )
-    metadata: dict[str, Any] = None
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.metadata is None:
@@ -66,7 +66,7 @@ class JobStateInfo:
     retry_count: int = 0
     max_retries: int = 3
     timeout_minutes: int = 60
-    metadata: dict[str, Any] = None
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.metadata is None:
@@ -82,7 +82,6 @@ class StateManager:
         self.jobs: dict[str, JobStateInfo] = {}
         self.load_state()
 
-    @log_function_call
     def load_state(self) -> dict[str, Any]:
         """Load state from file."""
         try:
@@ -128,7 +127,8 @@ class StateManager:
             logger.info(
                 f"Loaded state: {len(self.instances)} instances, {len(self.jobs)} jobs"
             )
-            return data
+            result: dict[str, Any] = data
+            return result
 
         except Exception as e:
             logger.error(f"Failed to load state: {e}")
@@ -216,6 +216,8 @@ class StateManager:
                     else:
                         setattr(instance, key, value)
                 else:
+                    if instance.metadata is None:
+                        instance.metadata = {}
                     instance.metadata[key] = value
 
             instance.last_updated = datetime.now()
@@ -243,6 +245,8 @@ class StateManager:
                 if hasattr(job, key):
                     setattr(job, key, value)
                 else:
+                    if job.metadata is None:
+                        job.metadata = {}
                     job.metadata[key] = value
 
             self.save_state()

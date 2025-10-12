@@ -23,7 +23,6 @@ class JobState(Enum):
     FAILED = "failed"
 
 
-@log_function_call
 def move_file(source: Path, destination: Path) -> bool:
     """Move a file from source to destination."""
     try:
@@ -105,7 +104,6 @@ def list_files(directory: Path, pattern: str = "*") -> list[Path]:
         raise FileOperationError(f"Failed to list files: {e}")
 
 
-@log_function_call
 def move_job_file(job_file: str, from_state: JobState, to_state: JobState) -> bool:
     """Move a job file between state directories."""
     try:
@@ -145,7 +143,6 @@ def move_job_file(job_file: str, from_state: JobState, to_state: JobState) -> bo
         raise FileOperationError(f"Failed to move job file: {e}")
 
 
-@log_function_call
 def atomic_file_move(source: Path, destination: Path) -> bool:
     """Perform an atomic file move operation."""
     return move_file(source, destination)
