@@ -30,7 +30,7 @@ class InstanceInfo:
     ports: dict[str, Any]
     metadata: dict[str, Any] = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.metadata is None:
             self.metadata = {}
 

@@ -4,12 +4,12 @@ Task scheduling for the vast.ai automation system.
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from queue import PriorityQueue
 from typing import Any, Dict, Optional
-from collections.abc import Callable
 
 from ..utils.exceptions import StateManagementError
 from ..utils.logging import get_logger, log_function_call

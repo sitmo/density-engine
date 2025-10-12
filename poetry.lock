@@ -3008,6 +3008,20 @@ tests = ["autopep8", "isort", "llnl-hatchet", "numpy", "pytest", "pytest-forked"
 tutorials = ["matplotlib", "pandas", "tabulate"]
 
 [[package]]
+name = "types-paramiko"
+version = "4.0.0.20250822"
+description = "Typing stubs for paramiko"
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "types_paramiko-4.0.0.20250822-py3-none-any.whl", hash = "sha256:55bdb14db75ca89039725ec64ae3fa26b8d57b6991cfb476212fa8f83a59753c"},
+    {file = "types_paramiko-4.0.0.20250822.tar.gz", hash = "sha256:1b56b0cbd3eec3d2fd123c9eb2704e612b777e15a17705a804279ea6525e0c53"},
+]
+
+[package.dependencies]
+cryptography = ">=37.0.0"
+
+[[package]]
 name = "typing-extensions"
 version = "4.15.0"
 description = "Backported and Experimental Type Hints for Python 3.9+"
@@ -3080,4 +3094,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.10,<3.14"
-content-hash = "1389d9e2ad965d206e98c2f0a7e97ae5f3efe706a497356da77e2cd8689e771b"
+content-hash = "8b4b1902c1329b9509924fe7f64596d1326aa65ea56364459f9384c433e2a6eb"

@@ -472,7 +472,7 @@ class OrchestrationCoordinator:
             return False
 
     @log_function_call
-    def _schedule_preparation_for_unprepared_instances(self):
+    def _schedule_preparation_for_unprepared_instances(self) -> None:
         """Schedule preparation tasks for instances that are not prepared."""
         try:
             unprepared_instances = self.state_manager.get_unprepared_instances()
@@ -778,7 +778,7 @@ class OrchestrationCoordinator:
             logger.error(f"Failed to verify instance preparation on startup: {e}")
 
     @log_function_call
-    def stop_orchestration(self):
+    def stop_orchestration(self) -> None:
         """Stop the orchestration system."""
         try:
             if not self.running:

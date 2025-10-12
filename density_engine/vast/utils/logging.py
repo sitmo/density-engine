@@ -27,7 +27,7 @@ def log_function_call(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to log function calls."""
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         logger = get_logger(func.__module__)
         logger.debug(f"Calling {func.__name__} with args={args}, kwargs={kwargs}")
         try:
@@ -45,7 +45,7 @@ def log_execution_time(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to log function execution time."""
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         logger = get_logger(func.__module__)
         start_time = time.time()
         try:

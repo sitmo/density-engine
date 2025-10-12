@@ -161,7 +161,7 @@ def discover_job_files(directory: Path) -> list[Path]:
 def categorize_jobs_by_type(job_files: list[Path]) -> dict[str, list[Path]]:
     """Categorize job files by type."""
     try:
-        categories = {}
+        categories: dict[str, list[Path]] = {}
 
         for job_file in job_files:
             job_info = parse_job_file(job_file)

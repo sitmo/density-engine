@@ -33,6 +33,7 @@ docformatter = "^1.7.5"
 pyupgrade = "^3.17.0"
 
 # Tool configurations
+types-paramiko = "^4.0.0.20250822"
 [tool.black]
 line-length = 88
 target-version = ['py311']
