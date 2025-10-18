@@ -1,4 +1,9 @@
-from typing import Any, Optional, Self, Tuple
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from typing import Self
+else:
+    Self = Any
 
 import torch
 
