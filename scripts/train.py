@@ -264,6 +264,29 @@ def main():
 
     device = torch.device(args.device)
     
+    # Print device information
+    print(f"\n=== Device Information ===")
+    print(f"Selected device: {device}")
+    print(f"Device type: {device.type}")
+    
+    if device.type == "cuda":
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        print(f"CUDA device count: {torch.cuda.device_count()}")
+        print(f"Current CUDA device: {torch.cuda.current_device()}")
+        print(f"CUDA device name: {torch.cuda.get_device_name(device)}")
+        print(f"CUDA memory allocated: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
+        print(f"CUDA memory cached: {torch.cuda.memory_reserved(device) / 1024**3:.2f} GB")
+        print(f"CUDA capability: {torch.cuda.get_device_capability(device)}")
+    elif device.type == "mps":
+        print(f"MPS available: {torch.backends.mps.is_available()}")
+        print(f"MPS built: {torch.backends.mps.is_built()}")
+    elif device.type == "cpu":
+        print(f"CPU threads: {torch.get_num_threads()}")
+        print(f"CPU interop threads: {torch.get_num_interop_threads()}")
+    
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"========================\n")
+    
     # Parse layers argument
     hidden_layers = [int(x.strip()) for x in args.layers.split(',')]
     
