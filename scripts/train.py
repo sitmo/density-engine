@@ -284,12 +284,11 @@ def main():
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lrd)
     
     # Initialize outlier tracking infrastructure
-    quantile_tracker = None
+    quantile_tracker = WindowQuantiles(eps=1e-2, window_step=5000)
     outlier_buffer = None
     
     if args.outlier_buffer > 0:
         print(f"Initializing outlier buffer with capacity {args.outlier_buffer}")
-        quantile_tracker = WindowQuantiles(eps=1e-2, window_step=5000)
         outlier_buffer = SampleRingBuffer(
             capacity=args.outlier_buffer,
             x_shape=(len(PARAM_COLS),),  # 8 parameters
@@ -368,15 +367,14 @@ def main():
                 
                 if not is_outlier_batch:
                     # Regular batch: update quantiles and buffer
-                    if quantile_tracker is not None:
-                        for loss_val in row_losses:
-                            quantile_tracker.insert(loss_val.item())
+                    for loss_val in row_losses:
+                        quantile_tracker.insert(loss_val.item())
+                    
+                    threshold = quantile_tracker.query(0.98)
+                    outlier_mask = row_losses > threshold
                         
-                        threshold = quantile_tracker.query(0.98)
-                        outlier_mask = row_losses > threshold
-                        
-                        if outlier_mask.any() and outlier_buffer is not None:
-                            outlier_buffer.append(params[outlier_mask], targets[outlier_mask])
+                    if outlier_mask.any() and outlier_buffer is not None:
+                        outlier_buffer.append(params[outlier_mask], targets[outlier_mask])
                     
                     max_diff = compute_max_abs_diff(model, params, targets, quantile_levels)
                     train_losses.append(loss.item())
@@ -446,7 +444,7 @@ def main():
                     # Compute outlier metrics
                     avg_outlier_loss = np.mean(outlier_batch_losses[-log_period:]) if len(outlier_batch_losses) >= log_period else (np.mean(outlier_batch_losses) if outlier_batch_losses else 0.0)
                     outlier_buffer_size = outlier_buffer.size if outlier_buffer is not None else 0
-                    loss_quantile_98 = quantile_tracker.query(0.98) if quantile_tracker is not None else 0.0
+                    loss_quantile_98 = quantile_tracker.query(0.98)
                     
                     # Calculate current epoch based on total batches processed
                     current_epoch = total_samples_processed // train_samples + 1
