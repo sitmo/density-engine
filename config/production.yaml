@@ -1,0 +1,70 @@
+# Density Engine Configuration
+
+# Redis Configuration
+redis:
+  host: localhost
+  port: 6379
+  db_broker: 0
+  db_backend: 1
+  password: null
+  ssl: false
+
+# Celery Configuration
+celery:
+  broker_url: redis://localhost:6379/0
+  result_backend: redis://localhost:6379/1
+  worker_concurrency: 4
+  max_tasks_per_child: 100
+  task_default_retry_delay: 60
+  task_max_retries: 3
+
+# Cluster Configuration
+cluster:
+  vast_api_key: ${VAST_API_KEY}
+  ssh_key_path: ~/.ssh/id_ed25519
+  max_instances: 100
+  target_instances: 50
+  discovery_interval: 60
+  health_check_interval: 30
+  job_monitor_interval: 10
+
+# Model Configuration
+models:
+  gjrgarch_normalized:
+    num_sim: 10000000
+    num_quantiles: 512
+    stride: 1
+  gjrgarch:
+    num_sim: 10000000
+    num_quantiles: 512
+    stride: 1
+  rough_heston:
+    num_sim: 5000000
+    num_quantiles: 512
+    stride: 1
+  rough_bergomi:
+    num_sim: 5000000
+    num_quantiles: 512
+    stride: 1
+
+# Dataset Configuration
+datasets:
+  hf_org: your-org
+  shard_size: 65000
+  split_ratio: 0.8
+  output_format: parquet
+
+# Logging Configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+  file: logs/density_engine.log
+  max_size: 100MB
+  backup_count: 5
+
+# Monitoring Configuration
+monitoring:
+  enable_metrics: true
+  metrics_port: 9090
+  enable_tracing: false
+  trace_endpoint: null

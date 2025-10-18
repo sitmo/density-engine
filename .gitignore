@@ -209,3 +209,7 @@ __marimo__/
 *.parquet
 jobs/
 vast_state.json
+
+mlruns
+plots
+outputs

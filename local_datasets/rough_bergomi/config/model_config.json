@@ -1,0 +1,52 @@
+{
+  "model_name": "rough_bergomi",
+  "description": "Rough Bergomi stochastic volatility model",
+  "version": "1.0.0",
+  "default_parameters": {
+    "num_sim": 5000000,
+    "num_quantiles": 512,
+    "stride": 1,
+    "times": [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000]
+  },
+  "model_parameters": {
+    "eta": {
+      "description": "Volatility of volatility parameter",
+      "type": "float",
+      "range": [0.5, 3.0],
+      "default": 1.9
+    },
+    "rho": {
+      "description": "Correlation between price and volatility",
+      "type": "float",
+      "range": [-0.99, 0.99],
+      "default": -0.9
+    },
+    "hurst": {
+      "description": "Hurst parameter (roughness)",
+      "type": "float",
+      "range": [0.01, 0.49],
+      "default": 0.1
+    },
+    "xi0": {
+      "description": "Initial forward variance level",
+      "type": "float",
+      "range": [0.01, 0.5],
+      "default": 0.04
+    }
+  },
+  "output_schema": {
+    "eta": "float64",
+    "rho": "float64",
+    "hurst": "float64",
+    "xi0": "float64",
+    "ti": "float32",
+    "p": "float64",
+    "x": "list"
+  },
+  "huggingface": {
+    "dataset_name": "rough-bergomi-densities",
+    "description": "Rough Bergomi model density estimation dataset with train/test splits",
+    "tags": ["rough-bergomi", "stochastic-volatility", "finance", "density-estimation", "time-series"],
+    "license": "mit"
+  }
+}

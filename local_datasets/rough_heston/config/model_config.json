@@ -1,0 +1,66 @@
+{
+  "model_name": "rough_heston",
+  "description": "Rough Heston stochastic volatility model",
+  "version": "1.0.0",
+  "default_parameters": {
+    "num_sim": 5000000,
+    "num_quantiles": 512,
+    "stride": 1,
+    "times": [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000]
+  },
+  "model_parameters": {
+    "kappa": {
+      "description": "Mean reversion speed",
+      "type": "float",
+      "range": [0.1, 10.0],
+      "default": 2.0
+    },
+    "theta": {
+      "description": "Long-term variance level",
+      "type": "float",
+      "range": [0.01, 0.5],
+      "default": 0.04
+    },
+    "sigma": {
+      "description": "Volatility of volatility",
+      "type": "float",
+      "range": [0.1, 2.0],
+      "default": 0.3
+    },
+    "rho": {
+      "description": "Correlation between price and volatility",
+      "type": "float",
+      "range": [-0.99, 0.99],
+      "default": -0.7
+    },
+    "alpha": {
+      "description": "Roughness parameter",
+      "type": "float",
+      "range": [0.1, 0.9],
+      "default": 0.5
+    },
+    "v0": {
+      "description": "Initial variance level",
+      "type": "float",
+      "range": [0.01, 0.5],
+      "default": 0.04
+    }
+  },
+  "output_schema": {
+    "kappa": "float64",
+    "theta": "float64",
+    "sigma": "float64", 
+    "rho": "float64",
+    "alpha": "float64",
+    "v0": "float64",
+    "ti": "float32",
+    "p": "float64",
+    "x": "list"
+  },
+  "huggingface": {
+    "dataset_name": "rough-heston-densities",
+    "description": "Rough Heston model density estimation dataset with train/test splits",
+    "tags": ["rough-heston", "stochastic-volatility", "finance", "density-estimation", "time-series"],
+    "license": "mit"
+  }
+}

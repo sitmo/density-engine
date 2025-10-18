@@ -1,14 +1,21 @@
-from typing import List, Tuple, Union
+"""
+GARCH (Generalized Autoregressive Conditional Heteroskedasticity) model implementation.
+
+This module provides GARCH model implementations that conform to the MonteCarloModel protocol.
+"""
+
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
 
-from .skew_student_t import HansenSkewedT_torch
+from ..utils import HansenSkewedT, get_best_device
+from .base import MonteCarloModelBase
 
 
-class GJRGARCHReduced_torch:
+class GJRGARCHNormalized(MonteCarloModelBase):
     """
-    Shape-only (normalized) GJR–GARCH(1,1) simulator.
+    Shape-only (normalized) GJR–GARCH(1,1) simulator implementing MonteCarloModelProtocol.
 
     Model (normalized):
         r'_t = ε'_t,    ε'_t = σ'_t z_t,   z_t ~ S_t_{ν,λ}(0,1)
@@ -21,8 +28,9 @@ class GJRGARCHReduced_torch:
 
     Notes
     -----
-    - This is the “reduced / shape-only” engine: mean = 0, long-run variance = 1.
+    - This is the "reduced / shape-only" engine: mean = 0, long-run variance = 1.
     - It advances variance from t -> t+1 using the shock realized at time t.
+    - Implements MonteCarloModelProtocol for consistent interface.
     """
 
     def __init__(
@@ -32,28 +40,39 @@ class GJRGARCHReduced_torch:
         gamma: float,
         beta: float,
         sigma0_sq: float = 1.0,
-        dist: HansenSkewedT_torch,
+        eta: float = 10.0,
+        lam: float = 0.0,
+        device: str | torch.device | None = None,
     ):
         """
+        Initialize GJR-GARCH model.
+
         Parameters
         ----------
         alpha, gamma, beta : float
             GJR–GARCH coefficients.
         sigma0_sq : float, optional
             Initial normalized variance (σ'_0)^2. Default 1.0.
-        dist : HansenSkewedT_torch
-            Shock distribution with mean 0, var 1, and method to obtain P0.
+        eta : float, optional
+            Degrees of freedom for Hansen's skewed t-distribution. Default 10.0.
+        lam : float, optional
+            Skewness parameter for Hansen's skewed t-distribution. Default 0.0.
+        device : str | torch.device | None, optional
+            PyTorch device for computations. Default uses best available device.
         """
+        super().__init__(device)
+
         self.alpha = float(alpha)
         self.gamma = float(gamma)
         self.beta = float(beta)
         self.sigma0_sq = float(sigma0_sq)
-        self.dist = dist
+        self.eta = float(eta)
+        self.lam = float(lam)
 
-        self.device = dist.device
-        self._eps = 1e-8
+        # Create shock distribution
+        self.dist = HansenSkewedT(eta=eta, lam=lam, device=self.device)
 
-        P0 = dist.second_moment_left()  # E[z^2 | z<0]
+        P0 = self.dist.second_moment_left()  # E[z^2 | z<0]
         self.P0 = P0
         self.kappa = self.alpha + self.beta + self.gamma * P0
         if not (self.kappa < 1.0):
@@ -65,6 +84,23 @@ class GJRGARCHReduced_torch:
         self.num_paths: int = 0
         self.var: torch.Tensor | None = None  # (σ'_t)^2
         self.cum_returns: torch.Tensor | None = None  # sum of r'_t
+
+    @property
+    def model_name(self) -> str:
+        """Return model identifier."""
+        return "garch"
+
+    @property
+    def parameter_dict(self) -> dict[str, float]:
+        """Return model parameters as dictionary."""
+        return {
+            "alpha": self.alpha,
+            "gamma": self.gamma,
+            "beta": self.beta,
+            "sigma0_sq": self.sigma0_sq,
+            "eta": self.eta,
+            "lam": self.lam,
+        }
 
     def reset(self, num_paths: int) -> None:
         """
@@ -96,8 +132,6 @@ class GJRGARCHReduced_torch:
 
         # Draw standardized shocks z_t and form ε'_t
         z = self.dist.rvs(self.num_paths)  # shape (num_paths,)
-        if self.var is None:
-            raise ValueError("Variance not initialized")
         shock = z * torch.sqrt(self.var)  # ε'_t
 
         # Update cumulative return r'
@@ -113,57 +147,6 @@ class GJRGARCHReduced_torch:
         self.var = torch.clamp(self.var, min=self._eps)
 
         return self.cum_returns, self.ti
-
-    def path(
-        self, t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray
-    ) -> torch.Tensor:
-        """
-        Simulate paths up to specified time points and return cumulative returns.
-
-        Parameters
-        ----------
-        t : array-like
-            List or array of integers representing time steps (must be sorted).
-            E.g., [4, 10, 12] will return cumulative returns after 4, 10, and 12 steps.
-
-        Returns
-        -------
-        torch.Tensor, shape (len(t), num_paths)
-            Cumulative returns at each specified time point.
-            First row contains cum_returns after t[0] steps, etc.
-        """
-        import numpy as np
-
-        t = np.asarray(t)
-        if len(t) == 0:
-            return torch.empty((0, self.num_paths), device=self.device)
-
-        # Ensure t is sorted
-        if not np.all(np.diff(t) >= 0):
-            raise ValueError("Time points must be sorted in ascending order")
-
-        # Ensure all time points are positive
-        if np.any(t <= 0):
-            raise ValueError("All time points must be positive")
-
-        # Reset to beginning
-        self.reset(self.num_paths)
-
-        # Initialize result tensor
-        result = torch.empty((len(t), self.num_paths), device=self.device)
-
-        # Simulate up to each time point
-        for i, target_t in enumerate(t):
-            # Simulate from current time to target time
-            while self.ti < target_t:
-                self.step()
-
-            # Store cumulative returns at this time point
-            if self.cum_returns is None:
-                raise ValueError("Cumulative returns not initialized")
-            result[i] = self.cum_returns
-
-        return result
 
     def path_quantiles(
         self,
@@ -188,6 +171,8 @@ class GJRGARCHReduced_torch:
             Upper quantile bound (e.g., 0.999 for 99.9th percentile).
         size : int, default 512
             Number of quantiles to compute between lo and hi.
+        normalize : bool, default True
+            If True, normalize quantiles by sqrt(time).
         center : bool, default True
             If True, subtract the average of cum_returns before computing quantiles.
 
@@ -197,26 +182,15 @@ class GJRGARCHReduced_torch:
             Quantiles at each specified time point.
             First row contains quantiles after t[0] steps, etc.
         """
-        import numpy as np
+        # Validate inputs using base class methods
+        t = self._validate_time_points(t)
+        self._validate_quantile_bounds(lo, hi)
 
-        t = np.asarray(t)
         if len(t) == 0:
             return torch.empty((0, size), device=self.device)
 
-        # Ensure t is sorted
-        if not np.all(np.diff(t) >= 0):
-            raise ValueError("Time points must be sorted in ascending order")
-
-        # Ensure all time points are positive
-        if np.any(t <= 0):
-            raise ValueError("All time points must be positive")
-
-        # Validate quantile bounds
-        if not (0 <= lo < hi <= 1):
-            raise ValueError("Quantile bounds must satisfy 0 <= lo < hi <= 1")
-
         # Generate quantile levels
-        quantile_levels = torch.linspace(lo, hi, size, device=self.device)
+        quantile_levels = self._generate_quantile_levels(lo, hi, size)
 
         # Reset to beginning
         self.reset(self.num_paths)
@@ -231,25 +205,24 @@ class GJRGARCHReduced_torch:
                 self.step()
 
             # Compute quantiles for current cumulative returns
-            if self.cum_returns is None:
-                raise ValueError("Cumulative returns not initialized")
             cum_returns_for_quantiles = self.cum_returns
             if center:
                 cum_returns_for_quantiles = self.cum_returns - self.cum_returns.mean()
 
-            if normalize:
-                result[i] = torch.quantile(
-                    cum_returns_for_quantiles, quantile_levels
-                ) / torch.sqrt(torch.tensor(target_t, device=self.device))
-            else:
-                result[i] = torch.quantile(cum_returns_for_quantiles, quantile_levels)
+            # Compute raw quantiles
+            raw_quantiles = torch.quantile(cum_returns_for_quantiles, quantile_levels)
+
+            # Normalize if requested
+            result[i] = self._normalize_quantiles(
+                raw_quantiles, np.array([target_t]), normalize
+            )[0]
 
         return result
 
 
-class GJRGARCH_torch:
+class GJRGARCH(MonteCarloModelBase):
     """
-    Standard (raw) GJR-GARCH(1,1) simulator built on the reduced engine.
+    Standard (raw) GJR-GARCH(1,1) simulator implementing MonteCarloModelProtocol.
 
     Raw model:
         r_t = μ + ε_t,    ε_t = σ_t z_t
@@ -273,30 +246,41 @@ class GJRGARCH_torch:
         gamma: float,
         beta: float,
         sigma0_sq: float,
-        dist: HansenSkewedT_torch,
-        reduced_engine_cls: type = GJRGARCHReduced_torch,
+        eta: float = 10.0,
+        lam: float = 0.0,
+        device: str | torch.device | None = None,
     ):
         """
+        Initialize raw GJR-GARCH model.
+
         Parameters
         ----------
         mu, omega, alpha, gamma, beta : float
             Raw GJR–GARCH parameters.
         sigma0_sq : float
             Initial raw variance σ_0^2.
-        dist : object
-            Shock distribution with .device and method for P0 = E[z^2 | z<0].
-        reduced_engine_cls : type
-            Class implementing the reduced model (default: GJRGARCHReduced_torch).
+        eta : float, optional
+            Degrees of freedom for Hansen's skewed t-distribution. Default 10.0.
+        lam : float, optional
+            Skewness parameter for Hansen's skewed t-distribution. Default 0.0.
+        device : str | torch.device | None, optional
+            PyTorch device for computations. Default uses best available device.
         """
+        super().__init__(device)
+
         self.mu = float(mu)
         self.omega = float(omega)
         self.alpha = float(alpha)
         self.gamma = float(gamma)
         self.beta = float(beta)
         self.sigma0_sq = float(sigma0_sq)
-        self.dist = dist
+        self.eta = float(eta)
+        self.lam = float(lam)
 
-        P0 = dist.second_moment_left()
+        # Create shock distribution
+        self.dist = HansenSkewedT(eta=eta, lam=lam, device=self.device)
+
+        P0 = self.dist.second_moment_left()
         self.kappa = self.alpha + self.beta + self.gamma * P0
         if not (self.kappa < 1.0):
             raise ValueError(f"Stationarity violated: kappa={self.kappa} >= 1.")
@@ -307,17 +291,16 @@ class GJRGARCH_torch:
             raise ValueError(f"Long-run variance must be positive; got v={self.v}.")
         self.sqrt_v = float(self.v**0.5)
 
-        self.device = dist.device
-        self._eps = 1e-8
-
         # Build reduced engine with normalized initial variance
         sigma0_sq_reduced = max(self.sigma0_sq / self.v, self._eps)
-        self.reduced = reduced_engine_cls(
+        self.reduced = GJRGARCHNormalized(
             alpha=self.alpha,
             gamma=self.gamma,
             beta=self.beta,
             sigma0_sq=sigma0_sq_reduced,
-            dist=self.dist,
+            eta=self.eta,
+            lam=self.lam,
+            device=self.device,
         )
 
         # Raw state mirrors reduced state (but mapped back to raw units)
@@ -325,6 +308,25 @@ class GJRGARCH_torch:
         self.num_paths: int = 0
         self.var: torch.Tensor | None = None  # raw σ_t^2
         self.cum_returns: torch.Tensor | None = None  # raw cumulative returns Σ r_t
+
+    @property
+    def model_name(self) -> str:
+        """Return model identifier."""
+        return "garch_raw"
+
+    @property
+    def parameter_dict(self) -> dict[str, float]:
+        """Return model parameters as dictionary."""
+        return {
+            "mu": self.mu,
+            "omega": self.omega,
+            "alpha": self.alpha,
+            "gamma": self.gamma,
+            "beta": self.beta,
+            "sigma0_sq": self.sigma0_sq,
+            "eta": self.eta,
+            "lam": self.lam,
+        }
 
     def reset(self, num_paths: int) -> None:
         """
@@ -364,57 +366,6 @@ class GJRGARCH_torch:
 
         return self.cum_returns, self.ti
 
-    def path(
-        self, t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray
-    ) -> torch.Tensor:
-        """
-        Simulate paths up to specified time points and return cumulative returns.
-
-        Parameters
-        ----------
-        t : array-like
-            List or array of integers representing time steps (must be sorted).
-            E.g., [4, 10, 12] will return cumulative returns after 4, 10, and 12 steps.
-
-        Returns
-        -------
-        torch.Tensor, shape (len(t), num_paths)
-            Cumulative returns at each specified time point.
-            First row contains cum_returns after t[0] steps, etc.
-        """
-        import numpy as np
-
-        t = np.asarray(t)
-        if len(t) == 0:
-            return torch.empty((0, self.num_paths), device=self.device)
-
-        # Ensure t is sorted
-        if not np.all(np.diff(t) >= 0):
-            raise ValueError("Time points must be sorted in ascending order")
-
-        # Ensure all time points are positive
-        if np.any(t <= 0):
-            raise ValueError("All time points must be positive")
-
-        # Reset to beginning
-        self.reset(self.num_paths)
-
-        # Initialize result tensor
-        result = torch.empty((len(t), self.num_paths), device=self.device)
-
-        # Simulate up to each time point
-        for i, target_t in enumerate(t):
-            # Simulate from current time to target time
-            while self.ti < target_t:
-                self.step()
-
-            # Store cumulative returns at this time point
-            if self.cum_returns is None:
-                raise ValueError("Cumulative returns not initialized")
-            result[i] = self.cum_returns
-
-        return result
-
     def path_quantiles(
         self,
         t: list[int] | tuple[int, ...] | torch.Tensor | np.ndarray,
@@ -438,6 +389,8 @@ class GJRGARCH_torch:
             Upper quantile bound (e.g., 0.999 for 99.9th percentile).
         size : int, default 512
             Number of quantiles to compute between lo and hi.
+        normalize : bool, default True
+            If True, normalize quantiles by sqrt(time).
         center : bool, default True
             If True, subtract the average of cum_returns before computing quantiles.
 
@@ -447,26 +400,15 @@ class GJRGARCH_torch:
             Quantiles at each specified time point.
             First row contains quantiles after t[0] steps, etc.
         """
-        import numpy as np
+        # Validate inputs using base class methods
+        t = self._validate_time_points(t)
+        self._validate_quantile_bounds(lo, hi)
 
-        t = np.asarray(t)
         if len(t) == 0:
             return torch.empty((0, size), device=self.device)
 
-        # Ensure t is sorted
-        if not np.all(np.diff(t) >= 0):
-            raise ValueError("Time points must be sorted in ascending order")
-
-        # Ensure all time points are positive
-        if np.any(t <= 0):
-            raise ValueError("All time points must be positive")
-
-        # Validate quantile bounds
-        if not (0 <= lo < hi <= 1):
-            raise ValueError("Quantile bounds must satisfy 0 <= lo < hi <= 1")
-
         # Generate quantile levels
-        quantile_levels = torch.linspace(lo, hi, size, device=self.device)
+        quantile_levels = self._generate_quantile_levels(lo, hi, size)
 
         # Store original num_paths to restore later
         original_num_paths = self.num_paths
@@ -484,17 +426,16 @@ class GJRGARCH_torch:
                 self.step()
 
             # Compute quantiles for current cumulative returns
-            if self.cum_returns is None:
-                raise ValueError("Cumulative returns not initialized")
             cum_returns_for_quantiles = self.cum_returns
             if center:
                 cum_returns_for_quantiles = self.cum_returns - self.cum_returns.mean()
 
-            if normalize:
-                result[i] = torch.quantile(
-                    cum_returns_for_quantiles, quantile_levels
-                ) / torch.sqrt(torch.tensor(target_t, device=self.device))
-            else:
-                result[i] = torch.quantile(cum_returns_for_quantiles, quantile_levels)
+            # Compute raw quantiles
+            raw_quantiles = torch.quantile(cum_returns_for_quantiles, quantile_levels)
+
+            # Normalize if requested
+            result[i] = self._normalize_quantiles(
+                raw_quantiles, np.array([target_t]), normalize
+            )[0]
 
         return result
