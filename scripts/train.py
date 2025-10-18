@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from datasets import load_dataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 import mlflow
 import mlflow.pytorch
 from typing import List
@@ -30,71 +30,125 @@ from density_engine.utils.ringbuffer import SampleRingBuffer
 
 # ---- top-level helpers (picklable) ----
 
-def transform_params(example):
-    """Replace ti, var0, and eta with their log transforms and add ti indicator lazily (applied on access)."""
-    # Store original ti value before transformation
-    ti_original = example["ti"]
+class GarchDataset(Dataset):
+    """PyTorch Dataset for GARCH data."""
     
-
-    # Apply log transforms (ensure ti - 0.8 > 0)
-    example["ti"] = np.log(example["ti"] - 0.8) - 1.0
-    example["var0"] = np.log(example["var0"])
-    example["eta"] = np.log(example["eta"]) - 1.0
-    
-    # Add ti indicator: 1 if original ti was 1, else 0
-    example["ti_indicator"] = 1.0 if ti_original == 1.0 else 0.0
-    return example
-
-def collate(batch):
-    """Stack a list of dicts (NumPy) into batched torch tensors."""
-    b = {k: np.stack([ex[k] for ex in batch]) for k in ALL_COLS}
-    params  = torch.from_numpy(np.stack([b[c] for c in PARAM_COLS], axis=1))  # [B,8]
-    targets = torch.from_numpy(b["x"])                                        # [B,512]
-    return params.float(), targets.float()
-
-class TransformedDataset:
-    """Wrapper that applies transform and provides all columns including ti_indicator."""
-    
-    def __init__(self, dataset, transform_func):
-        self.dataset = dataset
-        self.transform_func = transform_func
-    
+    def __init__(self, df):
+        self.df = df
+        
     def __len__(self):
-        return len(self.dataset)
+        return len(self.df)
     
     def __getitem__(self, idx):
-        item = self.dataset[idx]
-        return self.transform_func(item)
+        row = self.df.iloc[idx]
+        
+        # Apply log transforms
+        ti_original = row["ti"]
+        ti_transformed = np.log(row["ti"] - 0.8) - 1.0
+        var0_transformed = np.log(row["var0"])
+        eta_transformed = np.log(row["eta"]) - 1.0
+        ti_indicator = 1.0 if ti_original == 1.0 else 0.0
+        
+        return {
+            "alpha": row["alpha"],
+            "gamma": row["gamma"],
+            "beta": row["beta"],
+            "var0": var0_transformed,
+            "eta": eta_transformed,
+            "lam": row["lam"],
+            "ti": ti_transformed,
+            "ti_indicator": ti_indicator,
+            "x": row["x"]
+        }
+
+def transform_params_single(example):
+    """Apply log transforms to a single example."""
+    # Store original ti value before transformation
+    ti_original = float(example["ti"])
     
-    def __iter__(self):
-        for i in range(len(self)):
-            yield self[i]
-
-def make_loader(ds, split, batch_size=1024, workers=4, shuffle=False):
-    # Create transformed dataset that includes ti_indicator
-    base_dataset = ds[split].with_format("numpy", columns=ORIGINAL_COLS)
-    transformed_dataset = TransformedDataset(base_dataset, transform_params)
+    # Apply log transforms (ensure ti - 0.8 > 0)
+    ti_transformed = np.log(ti_original - 0.8) - 1.0
+    var0_transformed = np.log(float(example["var0"]))
+    eta_transformed = np.log(float(example["eta"])) - 1.0
     
-    pin = torch.cuda.is_available()
-    return DataLoader(
-        transformed_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=workers,
-        pin_memory=pin,
-        persistent_workers=bool(workers),
-        prefetch_factor=(2 if workers else None),
-        collate_fn=collate,
-        drop_last=False,
-    )
+    # Add ti indicator: 1 if original ti was 1, else 0
+    ti_indicator = 1.0 if ti_original == 1.0 else 0.0
+    
+    # Return transformed example
+    return {
+        "alpha": float(example["alpha"]),
+        "gamma": float(example["gamma"]),
+        "beta": float(example["beta"]),
+        "var0": var0_transformed,
+        "eta": eta_transformed,
+        "lam": float(example["lam"]),
+        "ti": ti_transformed,
+        "ti_indicator": ti_indicator,
+        "x": example["x"]  # Keep as list
+    }
 
-def to_device(t1, t2, device):
-    non_block = device.type == "cuda"
-    return t1.to(device, non_blocking=non_block), t2.to(device, non_blocking=non_block)
+def collate_with_transforms(batch):
+    """Collate function that applies transforms during batching."""
+    # Extract raw data
+    alpha = np.array([ex["alpha"] for ex in batch])
+    gamma = np.array([ex["gamma"] for ex in batch])
+    beta = np.array([ex["beta"] for ex in batch])
+    var0 = np.array([ex["var0"] for ex in batch])
+    eta = np.array([ex["eta"] for ex in batch])
+    lam = np.array([ex["lam"] for ex in batch])
+    ti = np.array([ex["ti"] for ex in batch])
+    x = np.array([ex["x"] for ex in batch])
+    
+    # Apply log transforms
+    ti_original = ti.copy()
+    ti_transformed = np.log(ti - 0.8) - 1.0
+    var0_transformed = np.log(var0)
+    eta_transformed = np.log(eta) - 1.0
+    ti_indicator = (ti_original == 1.0).astype(np.float32)
+    
+    # Stack parameters
+    params = torch.stack([
+        torch.from_numpy(alpha),
+        torch.from_numpy(gamma),
+        torch.from_numpy(beta),
+        torch.from_numpy(var0_transformed),
+        torch.from_numpy(eta_transformed),
+        torch.from_numpy(lam),
+        torch.from_numpy(ti_transformed),
+        torch.from_numpy(ti_indicator)
+    ], dim=1).float()
+    
+    # Stack targets
+    targets = torch.from_numpy(x).float()
+    
+    return params, targets
 
-def compute_cdf_loss(model, params, targets, quantile_levels):
+def build_params_on_device(batch, device):
+    """Build parameters on GPU from raw batch data with transforms applied on device."""
+    # Move all tensors to device first (non-blocking for efficiency)
+    for k in batch:
+        batch[k] = batch[k].to(device, non_blocking=True)
+    
+    # Apply transforms on GPU
+    ti_original = batch["ti"]
+    
+    params = torch.stack([
+        batch["alpha"],
+        batch["gamma"],
+        batch["beta"],
+        torch.log(batch["var0"]),                    # log transform on GPU
+        torch.log(batch["eta"]) - 1.0,               # log transform on GPU
+        batch["lam"],
+        torch.log(ti_original - 0.8) - 1.0,          # log transform on GPU
+        (ti_original == 1.0).float(),                # ti_indicator on GPU
+    ], dim=1)
+    
+    targets = batch["x"]  # already [B, 512]
+    return params, targets
+
+def compute_cdf_metrics(model, params, targets, quantile_levels):
     """
-    Compute RMSE loss per row between CDF(targets) and quantile_levels.
+    Compute CDF-based metrics efficiently (single CDF call).
     
     Args:
         model: MDN model
@@ -103,44 +157,27 @@ def compute_cdf_loss(model, params, targets, quantile_levels):
         quantile_levels: Reference quantile levels [512]
     
     Returns:
-        RMSE loss per row [B] - for importance sampling preparation
+        row_losses: RMSE loss per row [B] for importance sampling
+        mean_max_diff: Mean of max absolute differences (scalar)
     """
-    # Compute CDF values for targets
+    # Compute CDF values once
     cdf_values = model.cdf(params, targets)  # [B, 512]
     
-    # Reference quantile levels should be [512] - expand to [B, 512]
+    # Reference quantile levels - expand to [B, 512]
     batch_size = params.size(0)
     ref_quantiles = quantile_levels.unsqueeze(0).expand(batch_size, -1)
     
-    # Compute RMSE per row (across the 512 quantile differences)
-    row_rmse = torch.sqrt(torch.mean((cdf_values - ref_quantiles) ** 2, dim=1))
+    # Compute differences
+    diff = cdf_values - ref_quantiles  # [B, 512]
     
-    return row_rmse
-
-def compute_max_abs_diff(model, params, targets, quantile_levels):
-    """
-    Compute mean of max absolute differences per row (batch-size independent).
+    # RMSE per row (for loss and outlier detection)
+    row_losses = torch.sqrt(torch.mean(diff ** 2, dim=1))  # [B]
     
-    Args:
-        model: MDN model
-        params: Input parameters [B, 8]
-        targets: Target quantiles [B, 512]
-        quantile_levels: Reference quantile levels [512]
+    # Max absolute difference per row, then mean across batch (for monitoring)
+    max_diff_per_row = torch.abs(diff).amax(dim=1)  # [B]
+    mean_max_diff = max_diff_per_row.mean()  # scalar
     
-    Returns:
-        Mean of max absolute differences per row (scalar)
-    """
-    cdf_values = model.cdf(params, targets)  # [B, 512]
-    batch_size = params.size(0)
-    ref_quantiles = quantile_levels.unsqueeze(0).expand(batch_size, -1)
-    
-    # Compute absolute differences [B, 512]
-    abs_diff = torch.abs(cdf_values - ref_quantiles)
-    
-    # Compute max per row (across 512 quantiles), then mean across batch
-    max_diff_per_row = torch.max(abs_diff, dim=1).values.detach()  # [B] - max for each row
-    mean_max_diff = torch.mean(max_diff_per_row)   # scalar - mean across batch
-    return mean_max_diff
+    return row_losses, mean_max_diff
 
 def add_noise_to_quantiles(q: torch.Tensor, p: torch.Tensor, N: float = 1e6) -> torch.Tensor:
     """
@@ -175,10 +212,10 @@ def add_noise_to_quantiles(q: torch.Tensor, p: torch.Tensor, N: float = 1e6) -> 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", type=str, default="sitmo/garch_densities")
-    ap.add_argument("--batch-size", type=int, default=256)
+    ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--samples", type=int, default=10_000_000,
                    help="Total number of samples to process (default: 10,000,000)")
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=8)
     
     # MDN architecture arguments
     ap.add_argument("--layers", type=str, default="64,64", 
@@ -237,8 +274,31 @@ def main():
     print(f"Loaded splits: {list(ds.keys())} in {(t1 - t0):.2f}s")
 
     print(f"Building loaders (batch_size={args.batch_size}, workers={args.workers})")
-    train_loader = make_loader(ds, "train", batch_size=args.batch_size, workers=args.workers, shuffle=True)
-    test_loader  = make_loader(ds, "test",  batch_size=args.batch_size, workers=args.workers, shuffle=False)
+    
+    # Use PyTorch format for efficient GPU pipeline - transforms will be done on GPU
+    train_dataset = ds["train"].with_format("torch", columns=ORIGINAL_COLS)
+    test_dataset = ds["test"].with_format("torch", columns=ORIGINAL_COLS)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=bool(args.workers),
+        prefetch_factor=4 if args.workers else None,
+        drop_last=False,
+    )
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=bool(args.workers),
+        prefetch_factor=4 if args.workers else None,
+        drop_last=False,
+    )
     
     # Print dataset statistics
     train_samples = len(train_loader.dataset)
@@ -282,6 +342,19 @@ def main():
     # Initialize optimizer and scheduler
     optimizer = optim.Adam(model.parameters(), lr=args.lrs)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lrd)
+    
+    # Enable mixed precision training for CUDA
+    use_amp = (device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if use_amp:
+        print("Mixed precision training (AMP) enabled")
+    
+    # Enable CUDA optimizations
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.benchmark = True
+        print("CUDA optimizations enabled (TF32, matmul precision, cuDNN benchmark)")
     
     # Initialize outlier tracking infrastructure
     quantile_tracker = WindowQuantiles(eps=1e-2, window_step=5000)
@@ -350,20 +423,21 @@ def main():
                     params, targets, _ = outlier_buffer.sample(args.batch_size, out_device=device)
                     is_outlier_batch = True
                 else:
-                    # Regular batch from loader
-                    params, targets = next(train_iter)
-                    params, targets = to_device(params, targets, device)
+                    # Regular batch from loader - build params on GPU with transforms
+                    batch = next(train_iter)
+                    params, targets = build_params_on_device(batch, device)
                     is_outlier_batch = False
                 
                 # Apply noise to training quantiles if --train-noise is specified
                 if args.train_noise is not None and not is_outlier_batch:
                     targets = add_noise_to_quantiles(targets, quantile_levels, N=args.train_noise)
                 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 
-                # Compute loss per row, then average across batch
-                row_losses = compute_cdf_loss(model, params, targets, quantile_levels)
-                loss = torch.mean(row_losses)  # Average across batch rows
+                # Compute loss with mixed precision
+                with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+                    row_losses, max_diff = compute_cdf_metrics(model, params, targets, quantile_levels)
+                    loss = row_losses.mean()
                 
                 if not is_outlier_batch:
                     # Regular batch: update quantiles and buffer
@@ -376,7 +450,6 @@ def main():
                     if outlier_mask.any() and outlier_buffer is not None:
                         outlier_buffer.append(params[outlier_mask], targets[outlier_mask])
                     
-                    max_diff = compute_max_abs_diff(model, params, targets, quantile_levels)
                     train_losses.append(loss.item())
                     train_max_diffs.append(max_diff.item())
                     batch_losses.append(loss.item())
@@ -386,8 +459,9 @@ def main():
                     # Outlier batch: just track loss
                     outlier_batch_losses.append(loss.item())
                 
-                loss.backward()
-                optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 
                 batch_idx += 1
                 # Count actual samples in this batch (last batch might be smaller)
@@ -420,16 +494,15 @@ def main():
                     test_losses = []
                     test_max_diffs = []
                     
-                    with torch.no_grad():
-                        for test_batch_idx, (test_params, test_targets) in enumerate(test_loader):
+                    with torch.inference_mode():
+                        for test_batch_idx, test_batch in enumerate(test_loader):
                             if test_batch_idx >= 10:  # Limit to 10 batches
                                 break
-                            test_params, test_targets = to_device(test_params, test_targets, device)
+                            test_params, test_targets = build_params_on_device(test_batch, device)
                             
-                            # Compute test loss and max_diff
-                            test_row_losses = compute_cdf_loss(model, test_params, test_targets, quantile_levels)
-                            test_loss = torch.mean(test_row_losses)
-                            test_max_diff = compute_max_abs_diff(model, test_params, test_targets, quantile_levels)
+                            # Compute test loss and max_diff (no AMP in eval)
+                            test_row_losses, test_max_diff = compute_cdf_metrics(model, test_params, test_targets, quantile_levels)
+                            test_loss = test_row_losses.mean()
                             
                             test_losses.append(test_loss.item())
                             test_max_diffs.append(test_max_diff.item())
@@ -478,7 +551,17 @@ def main():
             
             except StopIteration:
                 # End of dataset, recreate loader with fresh shuffling
-                train_loader = make_loader(ds, "train", batch_size=args.batch_size, workers=args.workers, shuffle=True)
+                train_dataset = ds["train"].with_format("torch", columns=ORIGINAL_COLS)
+                train_loader = DataLoader(
+                    train_dataset,
+                    batch_size=args.batch_size,
+                    shuffle=True,
+                    num_workers=args.workers,
+                    pin_memory=torch.cuda.is_available(),
+                    persistent_workers=bool(args.workers),
+                    prefetch_factor=4 if args.workers else None,
+                    drop_last=False,
+                )
                 train_iter = iter(train_loader)
                 print("Restarting dataset iterator with fresh shuffling...")
         
@@ -487,13 +570,12 @@ def main():
         test_losses = []
         test_max_diffs = []
         
-        with torch.no_grad():
-            for params, targets in test_loader:
-                params, targets = to_device(params, targets, device)
+        with torch.inference_mode():
+            for test_batch in test_loader:
+                test_params, test_targets = build_params_on_device(test_batch, device)
                 
-                row_losses = compute_cdf_loss(model, params, targets, quantile_levels)
-                loss = torch.mean(row_losses)  # Average across batch rows
-                max_diff = compute_max_abs_diff(model, params, targets, quantile_levels)
+                row_losses, max_diff = compute_cdf_metrics(model, test_params, test_targets, quantile_levels)
+                loss = row_losses.mean()
                 
                 test_losses.append(loss.item())
                 test_max_diffs.append(max_diff.item())
