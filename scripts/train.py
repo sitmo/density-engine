@@ -238,8 +238,8 @@ def main():
                    help="Learning rate decay factor (default: 0.99)")
     ap.add_argument("--lrds", type=int, default=10_000,
                    help="Learning rate decay samples - number of samples to process before LR decay step (default: 10_000)")
-    ap.add_argument("--log-steps", type=int, default=20_000,
-                   help="Logging steps - number of samples to process before logging metrics (default: 20_000)")
+    ap.add_argument("--log-steps", type=int, default=16384,
+                   help="Logging steps - number of samples to process before logging metrics (default: 16384)")
     
     # Outlier buffer arguments
     ap.add_argument("--outlier-buffer", type=int, default=0,
@@ -625,13 +625,36 @@ def main():
         
         mlflow.log_metrics(final_metrics, step=total_samples_processed)
         
-        # Log the final model
-        mlflow.pytorch.log_model(model, "model")
+        # Save the fully trained model to MLflow
+        print("Saving fully trained model to MLflow...")
+        mlflow.pytorch.log_model(
+            model, 
+            "model",
+            extra_files={
+                "model_config.txt": f"""Model Configuration:
+- Architecture: Mixture Density Network (MDN)
+- Input dimensions: {len(PARAM_COLS)} parameters
+- Hidden layers: {hidden_layers}
+- Number of components: {args.components}
+- Activation function: {args.activation}
+- Center mixture mean: {args.center}
+- Device: {device}
+- Total samples processed: {total_samples_processed:,}
+- Final train loss: {avg_train_loss:.6f}
+- Final test loss: {avg_test_loss:.6f}
+- Final learning rate: {optimizer.param_groups[0]['lr']:.6f}
+"""
+            }
+        )
+        
+        # Log model artifacts
+        mlflow.log_artifact("model_config.txt")
         
         print("Training completed!")
         print(f"Total samples processed: {total_samples_processed:,}")
         print(f"Final train loss: {avg_train_loss:.6f}")
         print(f"Final test loss: {avg_test_loss:.6f}")
+        print(f"Model saved to MLflow with artifact name: 'model'")
 
 if __name__ == "__main__":
     main()
