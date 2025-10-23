@@ -15,11 +15,13 @@ from typing import List
 import matplotlib.pyplot as plt
 import os
 import random
+import math
 
 # Columns
 PARAM_COLS = ["alpha","gamma","beta","var0","eta","lam","ti","ti_indicator"]  # 'ti' will be log(ti), 'ti_indicator' is 1 if original ti was 1
 ORIGINAL_COLS = ["alpha","gamma","beta","var0","eta","lam","ti","p","x"]  # Original dataset columns
 ALL_COLS   = PARAM_COLS + ["x"]
+
 
 # Import MDN model
 from density_engine.models.mdn import MixtureDensityNetwork
@@ -27,6 +29,12 @@ from density_engine.models.mdn import MixtureDensityNetwork
 # Import outlier tracking utilities
 from density_engine.utils.quantiles import WindowQuantiles
 from density_engine.utils.ringbuffer import SampleRingBuffer
+from density_engine.utils.schedulers import (
+    LinearWarmupExpDecayScheduler,
+    LinearWarmupCosineDecayScheduler,
+    LinearWarmupPowerLawScheduler,
+    CooldownSchedulerWrapper,
+)
 
 # ---- top-level helpers (picklable) ----
 
@@ -230,14 +238,34 @@ def main():
                    help="Disable centering of mixture mean")
     
     # Learning rate arguments
-    ap.add_argument("--lrs", type=float, default=5e-4,
-                   help="Learning rate start")
-    ap.add_argument("--lre", type=float, default=1e-7,
-                   help="Learning rate end")
-    ap.add_argument("--lrd", type=float, default=0.99,
-                   help="Learning rate decay factor (default: 0.99)")
-    ap.add_argument("--lrds", type=int, default=10_000,
-                   help="Learning rate decay samples - number of samples to process before LR decay step (default: 10_000)")
+    ap.add_argument("--lr-max", type=float, default=5e-4,
+                   help="Maximum/starting learning rate")
+    ap.add_argument("--lr-min", type=float, default=1e-7,
+                   help="Minimum/ending learning rate")
+    ap.add_argument("--warmup-samples", type=int, default=0,
+                   help="Linear warmup samples; ramp LR 0 -> lr-max over this many samples (default: 0)")
+    ap.add_argument("--scheduler", type=str, default="exp", choices=["exp","cosine","power"],
+                   help="LR scheduler: exp (warmup+exp), cosine (warmup+cosine), power (warmup+power-law)")
+    
+    # Exponential scheduler arguments
+    ap.add_argument("--exp-decay-factor", type=float, default=0.99,
+                   help="Exponential decay factor (gamma) for exp scheduler (default: 0.99)")
+    ap.add_argument("--exp-step-samples", type=int, default=10_000,
+                   help="Samples between decay steps for exp scheduler (default: 10_000)")
+    
+    # Cosine/Power scheduler arguments
+    ap.add_argument("--decay-samples", type=int, default=None,
+                   help="Total samples for decay after warmup (cosine/power schedulers, default: samples - warmup)")
+    
+    # Power-law scheduler arguments
+    ap.add_argument("--power-scale", type=int, default=10_000,
+                   help="Power-law characteristic timescale s0 (default: 10_000)")
+    ap.add_argument("--power-alpha", type=float, default=None,
+                   help="Power-law exponent alpha (negative, e.g., -0.5 for 1/sqrt(t)). If omitted, alpha is derived from lr-max and lr-min over decay-samples")
+    ap.add_argument("--optimizer", type=str, default="adam", choices=["adam","adamw","rmsprop","sgd"],
+                   help="Optimizer to use: adam, adamw, rmsprop, or sgd (default: adam)")
+    ap.add_argument("--weight-decay", type=float, default=0.0,
+                   help="Weight decay (L2) for optimizers that support it (default: 0.0)")
     ap.add_argument("--log-steps", type=int, default=16384,
                    help="Logging steps - number of samples to process before logging metrics (default: 16384)")
     
@@ -250,6 +278,14 @@ def main():
     # Training noise arguments
     ap.add_argument("--train-noise", type=int, default=None,
                    help="Add noise to training quantiles with N samples (default: None, no noise)")
+    
+    # Cooldown phase arguments
+    ap.add_argument("--cooldown-samples", type=int, default=0,
+                   help="Number of samples to train with low constant LR at end (default: 0, disabled)")
+    ap.add_argument("--cooldown-lr", type=float, default=None,
+                   help="Fixed learning rate during cooldown phase (default: None)")
+    ap.add_argument("--cooldown-lr-factor", type=float, default=0.1,
+                   help="Cooldown LR as fraction of lr-min (default: 0.1). Used only if --cooldown-lr not specified")
 
     if torch.backends.mps.is_available():
         default_device = "mps"
@@ -261,6 +297,26 @@ def main():
 
     args = ap.parse_args()
     print(f"Arguments: {args}")
+
+    # Validate cooldown arguments
+    if args.cooldown_samples > 0:
+        if args.cooldown_samples >= args.samples:
+            raise ValueError(f"cooldown_samples ({args.cooldown_samples}) must be less than total samples ({args.samples})")
+        
+        # Determine cooldown LR
+        if args.cooldown_lr is not None:
+            computed_cooldown_lr = args.cooldown_lr
+            if args.cooldown_lr_factor != 0.1:  # User specified both
+                print(f"Warning: Both --cooldown-lr and --cooldown-lr-factor specified. Using --cooldown-lr={args.cooldown_lr}")
+        else:
+            # We'll compute cooldown LR dynamically when cooldown starts
+            # by querying the actual LR at that point and applying the factor
+            computed_cooldown_lr = None  # Will be set dynamically when cooldown starts
+        
+        if computed_cooldown_lr is not None and computed_cooldown_lr <= 0:
+            raise ValueError(f"Cooldown LR must be positive, got {computed_cooldown_lr}")
+    else:
+        computed_cooldown_lr = None
 
     device = torch.device(args.device)
     
@@ -355,16 +411,134 @@ def main():
     )
     
     # Calculate batches per learning rate decay step
-    batches_per_lr_step = max(1, args.lrds // args.batch_size)
-    print(f"Learning rate decay: every {batches_per_lr_step} batches (every {args.lrds} samples)")
+    batches_per_lr_step = max(1, args.exp_step_samples // args.batch_size)
+    print(f"Learning rate decay: every {batches_per_lr_step} batches (every {args.exp_step_samples} samples)")
     
     # Calculate batches per logging step
     batches_per_log_step = max(1, args.log_steps // args.batch_size)
     print(f"Logging: every {batches_per_log_step} batches (every {args.log_steps} samples)")
     
-    # Initialize optimizer and scheduler
-    optimizer = optim.Adam(model.parameters(), lr=args.lrs)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=args.lrd)
+    # Initialize optimizer
+    # Start with lr_max; scheduler will immediately set proper initial LR (e.g., 0 if warming up)
+    if args.optimizer == "adam":
+        optimizer = optim.Adam(model.parameters(), lr=args.lr_max, weight_decay=args.weight_decay)
+    elif args.optimizer == "adamw":
+        optimizer = optim.AdamW(model.parameters(), lr=args.lr_max, weight_decay=args.weight_decay)
+    elif args.optimizer == "rmsprop":
+        optimizer = optim.RMSprop(model.parameters(), lr=args.lr_max, weight_decay=args.weight_decay, momentum=0.9, alpha=0.99)
+    elif args.optimizer == "sgd":
+        optimizer = optim.SGD(model.parameters(), lr=args.lr_max, weight_decay=args.weight_decay, momentum=0.9, nesterov=True)
+    else:
+        raise ValueError(f"Unsupported optimizer: {args.optimizer}")
+
+    # Initialize selected LR scheduler (PyTorch-compliant, sample-aware)
+    if args.scheduler == "exp":
+        base_scheduler = LinearWarmupExpDecayScheduler(
+            optimizer=optimizer,
+            lrs=args.lr_max,
+            lre=args.lr_min,
+            lrd=args.exp_decay_factor,
+            lrds=args.exp_step_samples,
+            warmup_samples=args.warmup_samples,
+        )
+        cosine_decay_samples = None
+        computed_power_alpha = None
+    elif args.scheduler == "cosine":
+        # Determine decay_samples default: remaining samples after warmup
+        total_decay_window = args.decay_samples if args.decay_samples is not None else max(1, args.samples - max(0, args.warmup_samples))
+        base_scheduler = LinearWarmupCosineDecayScheduler(
+            optimizer=optimizer,
+            lrs=args.lr_max,
+            lre=args.lr_min,
+            decay_samples=total_decay_window,
+            warmup_samples=args.warmup_samples,
+        )
+        cosine_decay_samples = total_decay_window
+        computed_power_alpha = None
+    elif args.scheduler == "power":
+        # Determine decay window (total power-law window after warmup)
+        total_decay_window = args.decay_samples if args.decay_samples is not None else max(1, args.samples - max(0, args.warmup_samples))
+        base_scheduler = LinearWarmupPowerLawScheduler(
+            optimizer=optimizer,
+            lrs=args.lr_max,
+            lre=(args.lr_min if args.power_alpha is None else None),
+            s0=args.power_scale,
+            warmup_samples=args.warmup_samples,
+            total_samples=total_decay_window,
+            alpha=args.power_alpha,
+        )
+        cosine_decay_samples = None
+        # Store computed alpha for logging
+        computed_power_alpha = base_scheduler.alpha if args.power_alpha is None else args.power_alpha
+    else:
+        raise ValueError(f"Unsupported scheduler: {args.scheduler}")
+    
+    # Wrap with cooldown scheduler if enabled
+    if args.cooldown_samples > 0:
+        scheduler = CooldownSchedulerWrapper(
+            base_scheduler=base_scheduler,
+            cooldown_samples=args.cooldown_samples,
+            cooldown_lr=computed_cooldown_lr,
+            total_samples=args.samples,
+            cooldown_lr_factor=args.cooldown_lr_factor
+        )
+    else:
+        scheduler = base_scheduler
+    
+    # Set initial learning rate based on scheduler (for warmup-aware initial LR)
+    initial_lr = scheduler.lr_at(0)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = initial_lr
+    
+    # Print detailed configuration
+    print(f"\n=== Training Configuration ===")
+    
+    # Model configuration
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: Mixture Density Network (MDN)")
+    print(f"  Input dimensions: {len(PARAM_COLS)} parameters")
+    print(f"  Hidden layers: {hidden_layers}")
+    print(f"  Components: {args.components}")
+    print(f"  Activation: {args.activation}")
+    print(f"  Center mixture mean: {args.center}")
+    print(f"  Model size: {total_params} parameters")
+    
+    # Optimizer configuration
+    print(f"Optimizer: {args.optimizer.upper()}")
+    print(f"  Weight decay: {args.weight_decay}")
+    print(f"  Initial LR: {initial_lr:.6f}")
+    
+    # Learning rate scheduler configuration
+    print(f"LR Scheduler: {args.scheduler}")
+    print(f"  LR range: {args.lr_max:.2e} → {args.lr_min:.2e}")
+    print(f"  Warmup samples: {args.warmup_samples:,}")
+    
+    if args.scheduler == "exp":
+        print(f"  Decay factor: {args.exp_decay_factor}")
+        print(f"  Decay step samples: {args.exp_step_samples:,}")
+    elif args.scheduler == "cosine":
+        decay_window = args.decay_samples if args.decay_samples is not None else max(1, args.samples - max(0, args.warmup_samples))
+        print(f"  Cosine decay samples: {decay_window:,}")
+    elif args.scheduler == "power":
+        decay_window = args.decay_samples if args.decay_samples is not None else max(1, args.samples - max(0, args.warmup_samples))
+        print(f"  Power decay samples: {decay_window:,}")
+        print(f"  Power scale (s0): {args.power_scale:,}")
+        if args.power_alpha is not None:
+            print(f"  Power alpha: {args.power_alpha}")
+        else:
+            print(f"  Power alpha: {computed_power_alpha:.6f}")
+    
+    # Cooldown configuration (if enabled)
+    if args.cooldown_samples > 0:
+        print(f"Cooldown Phase:")
+        print(f"  Cooldown samples: {args.cooldown_samples:,}")
+        if computed_cooldown_lr is not None:
+            print(f"  Cooldown LR: {computed_cooldown_lr:.2e}")
+        else:
+            print(f"  Cooldown LR: Will be computed dynamically (factor: {args.cooldown_lr_factor})")
+        print(f"  Cooldown starts at sample: {args.samples - args.cooldown_samples:,}")
+    
+    print(f"=============================\n")
     
     # Enable mixed precision training for CUDA
     use_amp = (device.type == "cuda")
@@ -398,6 +572,7 @@ def main():
     with mlflow.start_run():
         # Log all arguments except device
         mlflow.log_params({
+            "model_size": total_params,
             "repo": args.repo,
             "batch_size": args.batch_size,
             "samples": max_samples,
@@ -407,14 +582,20 @@ def main():
             "components": args.components,
             "activation": args.activation,
             "center": args.center,
-            "lrs": args.lrs,
-            "lre": args.lre,
-            "lrd": args.lrd,
-            "lrds": args.lrds,
+            "lr_max": args.lr_max,
+            "lr_min": args.lr_min,
+            "warmup_samples": args.warmup_samples,
+            "scheduler": args.scheduler,
+            **({"decay_samples": cosine_decay_samples} if args.scheduler == "cosine" else {}),
+            **({"power_decay_samples": total_decay_window, "power_scale": args.power_scale, "power_alpha": computed_power_alpha} if args.scheduler == "power" else {}),
+            "optimizer": args.optimizer,
+            "weight_decay": args.weight_decay,
             "log_steps": args.log_steps,
             "outlier_buffer": args.outlier_buffer,
             "outlier_mix": args.outlier_mix,
             "train_noise": args.train_noise,
+            "cooldown_samples": args.cooldown_samples,
+            "cooldown_lr": computed_cooldown_lr if args.cooldown_samples > 0 else None,
         })
         
         print(f"Starting training for {max_samples:,} samples...")
@@ -433,6 +614,9 @@ def main():
         
         # Create iterator for training data
         train_iter = iter(train_loader)
+        
+        # Create iterator for test data (for periodic evaluation)
+        test_iter = iter(test_loader)
         
         while total_samples_processed < max_samples:
             try:
@@ -496,14 +680,8 @@ def main():
                     print(f"Reached target of {max_samples:,} samples. Stopping training.")
                     break
                 
-                # Update learning rate every batches_per_lr_step batches
-                if batch_idx % batches_per_lr_step == 0:
-                    # Update learning rate
-                    if optimizer.param_groups[0]['lr'] > args.lre:
-                        scheduler.step()
-                        # if learning rate is less than lre, set it to lre and reset scheduler
-                        if optimizer.param_groups[0]['lr'] < args.lre:
-                            optimizer.param_groups[0]['lr'] = args.lre
+                # Advance scheduler by actual number of samples in this batch
+                scheduler.step(actual_batch_size)
                 
                 # Log metrics every batches_per_log_step batches
                 if batch_idx % batches_per_log_step == 0:
@@ -518,9 +696,14 @@ def main():
                     test_max_diffs = []
                     
                     with torch.inference_mode():
-                        for test_batch_idx, test_batch in enumerate(test_loader):
-                            if test_batch_idx >= 10:  # Limit to 10 batches
-                                break
+                        for test_batch_idx in range(20):
+                            try:
+                                test_batch = next(test_iter)
+                            except StopIteration:
+                                # Restart test iterator when exhausted
+                                test_iter = iter(test_loader)
+                                test_batch = next(test_iter)
+                            
                             test_params, test_targets = build_params_on_device(test_batch, device)
                             
                             # Compute test loss and max_diff (no AMP in eval)
@@ -588,26 +771,39 @@ def main():
                 train_iter = iter(train_loader)
                 print("Restarting dataset iterator with fresh shuffling...")
         
-        # Final validation phase
+        # Final validation phase - evaluate the FINAL MODEL on large datasets
         model.eval()
-        test_losses = []
-        test_max_diffs = []
-        
+        final_train_losses = []
+        final_test_losses = []
+        final_train_max_diffs = []
+        final_test_max_diffs = []
+
         with torch.inference_mode():
-            for test_batch in test_loader:
+            # Evaluate final model on 1000 test batches
+            for test_batch_idx, test_batch in enumerate(test_loader):
+                if test_batch_idx >= 1000:
+                    break
                 test_params, test_targets = build_params_on_device(test_batch, device)
-                
                 row_losses, max_diff = compute_cdf_metrics(model, test_params, test_targets, quantile_levels)
                 loss = row_losses.mean()
-                
-                test_losses.append(loss.item())
-                test_max_diffs.append(max_diff.item())
-        
-        # Compute final averages
-        avg_train_loss = np.mean(regular_batch_losses) if regular_batch_losses else 0.0
-        avg_train_max_diff = np.mean(train_max_diffs) if train_max_diffs else 0.0
-        avg_test_loss = np.mean(test_losses)
-        avg_test_max_diff = np.mean(test_max_diffs)
+                final_test_losses.append(loss.item())
+                final_test_max_diffs.append(max_diff.item())
+            
+            # Evaluate final model on 1000 train batches
+            for train_batch_idx, train_batch in enumerate(train_loader):
+                if train_batch_idx >= 1000:
+                    break
+                train_params, train_targets = build_params_on_device(train_batch, device)
+                row_losses, max_diff = compute_cdf_metrics(model, train_params, train_targets, quantile_levels)
+                loss = row_losses.mean()
+                final_train_losses.append(loss.item())
+                final_train_max_diffs.append(max_diff.item())
+
+        # Compute final averages for the FINAL MODEL
+        avg_train_loss = np.mean(final_train_losses) if final_train_losses else 0.0
+        avg_train_max_diff = np.mean(final_train_max_diffs) if final_train_max_diffs else 0.0
+        avg_test_loss = np.mean(final_test_losses)
+        avg_test_max_diff = np.mean(final_test_max_diffs)
         avg_outlier_loss_final = np.mean(outlier_batch_losses) if outlier_batch_losses else 0.0
         
         # Log final metrics
@@ -627,11 +823,9 @@ def main():
         
         # Save the fully trained model to MLflow
         print("Saving fully trained model to MLflow...")
-        mlflow.pytorch.log_model(
-            model, 
-            "model",
-            extra_files={
-                "model_config.txt": f"""Model Configuration:
+        
+        # Create model configuration file
+        config_content = f"""Model Configuration:
 - Architecture: Mixture Density Network (MDN)
 - Input dimensions: {len(PARAM_COLS)} parameters
 - Hidden layers: {hidden_layers}
@@ -644,7 +838,26 @@ def main():
 - Final test loss: {avg_test_loss:.6f}
 - Final learning rate: {optimizer.param_groups[0]['lr']:.6f}
 """
-            }
+        
+        # Write config file to disk
+        with open("model_config.txt", "w") as f:
+            f.write(config_content)
+        
+        # Create input example for model signature
+        # Move model to CPU for logging (MLflow best practice)
+        model.cpu()
+        
+        # Use a sample from the test set to create an input example
+        sample_batch = next(iter(test_loader))
+        sample_params, _ = build_params_on_device(sample_batch, torch.device('cpu'))
+        input_example = sample_params[:1].numpy().astype(np.float32)
+        
+        # Log the model with extra files and input example
+        mlflow.pytorch.log_model(
+            pytorch_model=model,
+            artifact_path="model",
+            extra_files=["model_config.txt"],
+            input_example=input_example
         )
         
         # Log model artifacts

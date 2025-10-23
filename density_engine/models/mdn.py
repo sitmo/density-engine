@@ -77,23 +77,20 @@ class MixtureDensityNetwork(nn.Module):
         """
         features = self.network(x)
 
-        # means (mu)
-        means = self.mean_layer(features)  # (B, K)
+        mean_features = self.mean_layer(features)
+        std_features = self.std_layer(features)
+        weight_features = self.weight_layer(features)
 
-        # mixture weights: bounded logits -> log_softmax -> probs
-        weights_logits = torch.tanh(self.weight_layer(features)) * 6.0  # (B, K)
-        weights = F.softmax(weights_logits, dim=-1)  # π_k in prob space
+        means = mean_features
+        weights = F.softmax(torch.tanh(weight_features) * 6.0, dim=-1)
+        std = torch.exp(torch.tanh(std_features) * 5.0 - 3.0)
 
-        # stds (sigma): exp + clip (match working code; keep tiny floor for safety)
-        log_stds = torch.tanh(self.std_layer(features)) * 5.0 - 3.0
-        stds = torch.exp(log_stds)
-
-        # optional centering (same as before): subtract mixture mean so overall mean ~ 0
+        # optional centering: subtract mixture mean so overall mean ~ 0
         if self.center:
             mixture_mean = torch.sum(weights * means, dim=-1, keepdim=True)  # (B,1)
             means = means - mixture_mean
 
-        return means, stds, weights
+        return means, std, weights
 
     @torch.no_grad()
     def sample(self, x: torch.Tensor, num_samples: int = 1) -> torch.Tensor:

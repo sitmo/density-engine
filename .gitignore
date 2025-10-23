@@ -213,3 +213,4 @@ vast_state.json
 mlruns
 plots
 outputs
+results_train_garch

@@ -1,0 +1,12 @@
+Model Configuration:
+- Architecture: Mixture Density Network (MDN)
+- Input dimensions: 8 parameters
+- Hidden layers: [64, 64]
+- Number of components: 64
+- Activation function: gelu
+- Center mixture mean: True
+- Device: mps
+- Total samples processed: 10,000,082
+- Final train loss: 0.000531
+- Final test loss: 0.000558
+- Final learning rate: 0.000092

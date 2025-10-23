@@ -23,23 +23,24 @@ cd density-engine/
 export PYTHONPATH="$PWD:$PYTHONPATH"
 
 
-# 26995125
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 2E-3 --lre 1E-7 --lrd 0.998 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 1E-3 --lre 1E-7 --lrd 0.998 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 5E-4 --lre 1E-7 --lrd 0.998 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 2E-4 --lre 1E-7 --lrd 0.998 --samples 50_000_000 --workers 8
 
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 1E-4 --lre 1E-7 --lrd 0.998 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 2E-3 --lre 1E-7 --lrd 0.999 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 1E-3 --lre 1E-7 --lrd 0.999 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 5E-4 --lre 1E-7 --lrd 0.999 --samples 50_000_000 --workers 8
 
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 2E-4 --lre 1E-7 --lrd 0.999 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 1E-4 --lre 1E-7 --lrd 0.999 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 1E-3 --lre 1E-7 --lrd 1.0 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 5E-4 --lre 1E-7 --lrd 1.0 --samples 50_000_000 --workers 8
 
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 2E-4 --lre 1E-7 --lrd 1.0 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 1E-4 --lre 1E-7 --lrd 1.0 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 5E-5 --lre 1E-7 --lrd 1.0 --samples 50_000_000 --workers 8
-python scripts/train.py --layers 256,256 --components 256 --activation gelu --batch-size=1024 --lrs 2E-5 --lre 1E-7 --lrd 1.0 --samples 50_000_000 --workers 8
+
+
+
+
+
+
+
+
+
+
+
+scp -r -P 21739 root@116.127.115.18:/workspace/density-engine/mlruns ./mlruns
+
+ssh -p 21739 root@116.127.115.18 -L 8080:localhost:8080
+ssh -p 23623 root@116.127.115.18 -L 8080:localhost:8080
+ssh -p 42827 root@174.88.249.135 -L 8080:localhost:8080
+ssh -p 20740 root@116.122.206.233 -L 8080:localhost:8080
+
